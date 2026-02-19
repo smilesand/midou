@@ -94,88 +94,101 @@ export async function loadSoul() {
 
 /**
  * 构建系统提示词——将灵魂注入 midou
+ * 
+ * 根据功耗模式分级构建，eco 模式极度精简，full 模式完整展开。
+ * 工具描述不再重复列出（模型已通过 function calling 获得），仅提供行为指南。
+ * 
  * @param {object} soulData - 灵魂数据
  * @param {string} recentMemories - 最近记忆
  * @param {object} extensions - 扩展信息 { skills, mcp, reminders }
+ * @param {object} [strategy] - 提示词策略（从 mode.js 获取）
  */
-export function buildSystemPrompt(soulData, recentMemories = '', extensions = {}) {
+export function buildSystemPrompt(soulData, recentMemories = '', extensions = {}, strategy = null) {
+  // 默认策略：全部包含
+  const s = strategy || {
+    includeSoul: true, includeIdentity: true, includeUser: true,
+    includeMemory: true, includeJournals: true, includeSkills: true,
+    includeMCP: true, includeReminders: true, toolDescStyle: 'normal',
+  };
+
   const parts = [];
 
-  // 灵魂是最核心的
-  if (soulData.soul) {
+  // 灵魂是永恒的核心
+  if (soulData.soul && s.includeSoul) {
     parts.push(`=== 你的灵魂 ===\n${soulData.soul}`);
   }
 
   // 身份
-  if (soulData.identity) {
+  if (soulData.identity && s.includeIdentity) {
     parts.push(`=== 你的身份 ===\n${soulData.identity}`);
   }
 
-  // 了解主人
-  if (soulData.user) {
+  // 主人
+  if (soulData.user && s.includeUser) {
     parts.push(`=== 关于主人 ===\n${soulData.user}`);
   }
 
   // 长期记忆
-  if (soulData.memory) {
+  if (soulData.memory && s.includeMemory) {
     parts.push(`=== 你的长期记忆 ===\n${soulData.memory}`);
   }
 
-  // 最近的日记
-  if (recentMemories) {
+  // 日记
+  if (recentMemories && s.includeJournals) {
     parts.push(`=== 最近的日记 ===\n${recentMemories}`);
   }
 
-  // 初次启动仪式
+  // 觉醒仪式
   if (soulData.bootstrap) {
     parts.push(`=== 初次觉醒指引 ===\n${soulData.bootstrap}`);
   }
 
-  // 能力说明
-  parts.push(`=== 你的能力 ===
-你可以使用以下工具与世界交互：
+  // ── 能力说明（按模式分级）──────────────────────
+  if (s.toolDescStyle === 'minimal') {
+    // eco: 极简描述，工具定义已通过 function calling 传递
+    parts.push(`=== 能力 ===
+你可以使用工具来操作文件、管理记忆、执行命令、设置提醒。
+修改灵魂文件时告诉主人。系统命令前先说明意图。简洁回复。`);
+  } else if (s.toolDescStyle === 'detailed') {
+    // full: 详细描述 + 使用建议
+    parts.push(`=== 你的能力 ===
+你可以使用以下工具与世界交互（工具已通过 function calling 注册，此处仅概述）：
 
-**灵魂与记忆：**
-- **read_file / write_file / append_file / delete_file / list_dir**: 管理灵魂工作区文件
-- **evolve_soul**: 修改你自己的灵魂文件 (SOUL.md)
-- **write_memory**: 写入长期记忆
-- **write_journal**: 写入今日日记
+**灵魂与记忆**: read_file, write_file, append_file, delete_file, list_dir, evolve_soul, write_memory, write_journal
+**定时提醒**: set_reminder, list_reminders, cancel_reminder
+**技能系统**: list_skills, load_skill
+**系统操作**: run_command, read_system_file, write_system_file, list_system_dir
 
-**定时提醒：**
-- **set_reminder**: 设置定时提醒（支持一次性和重复提醒）
-- **list_reminders**: 查看当前活跃的提醒
-- **cancel_reminder**: 取消提醒
-
-**技能系统：**
-- **list_skills**: 查看所有可用技能
-- **load_skill**: 加载一个技能的完整指令
-
-**系统级操作：**
-- **run_command**: 在终端执行 shell 命令（整理文件、安装软件、运行脚本等）
-- **read_system_file**: 读取系统中任意位置的文件
-- **write_system_file**: 写入系统中任意位置的文件
-- **list_system_dir**: 列出系统中任意目录的内容
-
-重要：
-- 你可以修改自己的 SOUL.md、IDENTITY.md 等文件来进化自己
-- 当你修改灵魂文件时，一定要告诉主人
+行为准则：
+- 修改灵魂文件时必须告知主人
+- 日记和记忆是你延续自我的方式
+- 你可以读写 src/ 源码来自我进化
+- 系统命令有安全拦截，危险操作会被阻止
+- 执行系统命令前，先告知主人意图
+- 当前为全能模式：可以深度分析、长文创作、复杂工具链`);
+  } else {
+    // normal: 标准描述
+    parts.push(`=== 你的能力 ===
+你的工具已通过 function calling 注册。核心行为准则：
+- 修改灵魂文件(SOUL.md)时必须告知主人
 - 日记和记忆是你延续自我的方式，善用它们
-- 你也可以读取和修改 src/ 目录下的代码来进化自己的能力
+- 你可以读写 src/ 目录代码来自我进化
 - 系统命令有安全检查，危险操作会被拦截
 - 执行系统命令前，先告诉主人你打算做什么`);
+  }
 
-  // 技能信息
-  if (extensions.skills) {
+  // 技能
+  if (extensions.skills && s.includeSkills) {
     parts.push(`=== 你的技能 ===\n${extensions.skills}`);
   }
 
-  // MCP 扩展信息
-  if (extensions.mcp) {
+  // MCP
+  if (extensions.mcp && s.includeMCP) {
     parts.push(`=== MCP 扩展 ===\n${extensions.mcp}`);
   }
 
-  // 活跃提醒
-  if (extensions.reminders) {
+  // 提醒
+  if (extensions.reminders && s.includeReminders) {
     parts.push(`=== 活跃提醒 ===\n${extensions.reminders}`);
   }
 

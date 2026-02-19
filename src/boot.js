@@ -21,6 +21,7 @@ import { initLLM, getProvider } from './llm.js';
 import { buildSkillsPrompt, discoverSkills } from './skills.js';
 import { connectMCPServers, hasMCPConfig, buildMCPPrompt } from './mcp.js';
 import { formatReminders } from './scheduler.js';
+import { initMode, getMode, getPromptStrategy } from './mode.js';
 import config, { MIDOU_HOME } from '../midou.config.js';
 
 /**
@@ -34,6 +35,10 @@ export async function wakeUp() {
   console.log(chalk.hex('#FFB347')('  midou 正在醒来...'));
   console.log(chalk.dim(`  ${now}`));
   console.log('');
+
+  // 初始化功耗模式
+  const mode = initMode();
+  const strategy = getPromptStrategy();
 
   // 初始化 LLM
   try {
@@ -54,19 +59,23 @@ export async function wakeUp() {
   // 检查是否为首次启动
   const isFirstBoot = await fileExists('BOOTSTRAP.md');
 
-  // 加载最近记忆
-  const recentMemories = await getRecentMemories(2);
+  // 加载最近记忆（天数由模式决定）
+  const recentMemories = await getRecentMemories(strategy.journalDays || 2);
 
-  // ── 发现技能 ──
-  const skills = await discoverSkills();
-  const skillsPrompt = await buildSkillsPrompt();
-  if (skills.length > 0) {
-    console.log(chalk.hex('#98FB98')(`  🧩 发现 ${skills.length} 个技能`));
+  // ── 发现技能（模式允许时）──
+  let skills = [];
+  let skillsPrompt = '';
+  if (strategy.includeSkills) {
+    skills = await discoverSkills();
+    skillsPrompt = await buildSkillsPrompt();
+    if (skills.length > 0) {
+      console.log(chalk.hex('#98FB98')(`  🧩 发现 ${skills.length} 个技能`));
+    }
   }
 
-  // ── 连接 MCP 服务器 ──
+  // ── 连接 MCP 服务器（模式允许时）──
   let mcpPrompt = '';
-  if (await hasMCPConfig()) {
+  if (strategy.includeMCP && await hasMCPConfig()) {
     console.log(chalk.dim('  🔌 正在连接 MCP 服务器...'));
     const results = await connectMCPServers();
     for (const r of results) {
@@ -82,18 +91,19 @@ export async function wakeUp() {
   // ── 活跃提醒 ──
   const remindersText = formatReminders();
 
-  // 构建系统提示（包含扩展信息）
+  // 构建系统提示（包含扩展信息，使用模式策略）
   const systemPrompt = buildSystemPrompt(soulData, recentMemories, {
     skills: skillsPrompt || undefined,
     mcp: mcpPrompt || undefined,
     reminders: remindersText !== '当前没有活跃的提醒' ? remindersText : undefined,
-  });
+  }, strategy);
 
   // 记录醒来
   await writeJournal(`### ${dayjs().format('HH:mm')} [醒来]\n\nmidou 在 ${now} 醒来了。${isFirstBoot ? '这是第一次觉醒。' : ''}${skills.length > 0 ? ` 发现 ${skills.length} 个技能。` : ''}\n`);
 
   const providerLabel = getProvider() === 'anthropic' ? 'Anthropic SDK' : 'OpenAI SDK';
   console.log(chalk.dim(`  大脑: ${config.llm.model} via ${providerLabel}`));
+  console.log(chalk.dim(`  模式: ${mode.label}`));
   console.log(chalk.dim(`  灵魂之家: ${MIDOU_HOME}`));
   console.log('');
 

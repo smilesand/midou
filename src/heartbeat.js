@@ -11,8 +11,8 @@ import dayjs from 'dayjs';
 import config from '../midou.config.js';
 import { readFile } from './soul.js';
 import { chatSync } from './llm.js';
-import { buildSystemPrompt, loadSoul } from './soul.js';
-import { getRecentMemories, writeJournal } from './memory.js';
+import { writeJournal } from './memory.js';
+import { getHeartbeatParams } from './mode.js';
 
 let heartbeatTimer = null;
 let heartbeatCount = 0;
@@ -39,24 +39,22 @@ async function beat(onBeat) {
 
   try {
     const heartbeatMd = await readFile('HEARTBEAT.md');
-    const soulData = await loadSoul();
-    const recentMemories = await getRecentMemories(1);
 
-    const systemPrompt = buildSystemPrompt(soulData, recentMemories);
+    // 心跳用轻量系统提示词（只保留灵魂核心 + 用户信息）
+    const hbParams = getHeartbeatParams();
+    const lightSystemPrompt = `你是 midou（咪豆），正在进行定期心跳检查。保持简洁。`;
 
-    const heartbeatPrompt = `现在是 ${dayjs().format('YYYY-MM-DD HH:mm')}，这是你的第 ${heartbeatCount} 次心跳。
+    const heartbeatPrompt = `时间: ${dayjs().format('YYYY-MM-DD HH:mm')}，第 ${heartbeatCount} 次心跳。
 
-你正在进行一次定期的自主思考。请按照心跳检查清单行动：
+检查清单：
+${heartbeatMd || '- 回顾记忆\n- 整理信息'}
 
-${heartbeatMd || '- 回顾最近的记忆\n- 整理重要信息\n- 记录任何新的想法'}
-
-如果一切正常，没有需要特别关注的事情，只需回复 HEARTBEAT_OK。
-如果有重要的想法或发现，请详细描述。不要虚构信息。`;
+一切正常回复 HEARTBEAT_OK。有想法则简短描述。不要虚构。`;
 
     const response = await chatSync([
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: lightSystemPrompt },
       { role: 'user', content: heartbeatPrompt },
-    ]);
+    ], { maxTokens: hbParams.maxTokens });
 
     // 如果不是简单的 OK，记录心跳内容
     if (response && !response.includes('HEARTBEAT_OK')) {

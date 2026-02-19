@@ -20,8 +20,13 @@ import { startHeartbeat, stopHeartbeat, manualBeat, getHeartbeatStatus } from '.
 import { startScheduler, stopScheduler, formatReminders } from './scheduler.js';
 import { disconnectAll as disconnectMCP, getMCPStatus } from './mcp.js';
 import { discoverSkills } from './skills.js';
+import { getMode, setMode, listModes, getPromptStrategy } from './mode.js';
 import { logConversation } from './memory.js';
 import { getProvider } from './llm.js';
+import { loadSoul, buildSystemPrompt } from './soul.js';
+import { getRecentMemories } from './memory.js';
+import { buildSkillsPrompt } from './skills.js';
+import { buildMCPPrompt } from './mcp.js';
 import config, { MIDOU_HOME, MIDOU_PKG } from '../midou.config.js';
 import { isInitialized, initSoulDir, migrateFromWorkspace, MIDOU_SOUL_DIR } from './init.js';
 
@@ -51,6 +56,7 @@ const COMMANDS = {
   '/reminders': '查看活跃的提醒',
   '/skills': '查看可用技能',
   '/mcp': '查看 MCP 连接状态',
+  '/mode': '切换功耗模式 (eco/normal/full)',
 };
 
 /**
@@ -96,6 +102,9 @@ function showStatus() {
   } else {
     console.log(`  MCP: ${chalk.dim('未配置')}`);
   }
+  // 功耗模式
+  const mode = getMode();
+  console.log(`  模式: ${chalk.cyan(mode.label)}`);
   console.log('');
 }
 
@@ -244,7 +253,12 @@ async function main() {
 
     // 处理特殊命令
     if (input.startsWith('/')) {
-      switch (input.toLowerCase()) {
+      const lowerInput = input.toLowerCase();
+      const cmdParts = lowerInput.split(/\s+/);
+      const cmd = cmdParts[0];
+      const cmdArg = cmdParts[1] || '';
+
+      switch (cmd) {
         case '/quit':
         case '/exit':
         case '/bye':
@@ -350,6 +364,42 @@ async function main() {
             }
           }
           console.log('');
+          rl.prompt();
+          return;
+        }
+
+        case '/mode': {
+          if (cmdArg && ['eco', 'normal', 'full'].includes(cmdArg)) {
+            setMode(cmdArg);
+            const newMode = getMode();
+            console.log('');
+            console.log(chalk.hex('#98FB98')(`  ✅ 已切换到 ${newMode.label}`));
+            // 重建系统提示词
+            const strategy = getPromptStrategy();
+            const soul = loadSoul();
+            const journals = getRecentMemories(strategy.journalDays || 2);
+            const skillsPrompt = strategy.includeSkills ? buildSkillsPrompt(await discoverSkills()) : '';
+            const mcpPrompt = strategy.includeMCP ? buildMCPPrompt() : '';
+            const newPrompt = buildSystemPrompt(soul, journals, { skillsPrompt, mcpPrompt }, strategy);
+            engine.updateSystemPrompt(newPrompt);
+            console.log(chalk.dim(`  系统提示词已按 ${cmdArg} 模式重建`));
+            console.log('');
+          } else {
+            const modes = listModes();
+            const current = getMode();
+            console.log('');
+            console.log(chalk.hex('#FFD700').bold('  ⚡ 功耗模式'));
+            console.log(chalk.dim('  ─────────────────'));
+            for (const m of modes) {
+              const marker = m.name === current.name ? chalk.green(' ◀ 当前') : '';
+              console.log(`  ${m.label}${marker}`);
+              console.log(chalk.dim(`    maxTokens: ${m.maxTokens}, temp: ${m.temperature}`));
+              console.log(chalk.dim(`    ${m.description}`));
+            }
+            console.log('');
+            console.log(chalk.dim('  用法: /mode eco | /mode normal | /mode full'));
+            console.log('');
+          }
           rl.prompt();
           return;
         }

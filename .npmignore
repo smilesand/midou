@@ -8,5 +8,4 @@ workspace/
 # 开发文件
 .git/
 .gitignore
-PLAN.md
 node_modules/

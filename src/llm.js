@@ -111,9 +111,10 @@ function anthropicMsgToOpenAI(msg) {
  */
 export async function* chat(messages, options = {}) {
   if (!provider) initLLM();
+  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
-  const temperature = options.temperature ?? config.llm.temperature;
-  const maxTokens = options.maxTokens || config.llm.maxTokens;
+  const temperature = options.temperature ?? getModeTemperature();
+  const maxTokens = options.maxTokens || getModeMaxTokens();
 
   if (provider === 'anthropic') {
     const { system, rest } = extractSystem(messages);
@@ -142,12 +143,14 @@ export async function* chat(messages, options = {}) {
 
 /**
  * 非流式回复（心跳 / 后台任务）
+ * options.maxTokens 可由调用方（如心跳）单独指定以节省 token
  */
 export async function chatSync(messages, options = {}) {
   if (!provider) initLLM();
+  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
-  const temperature = options.temperature ?? config.llm.temperature;
-  const maxTokens = options.maxTokens || config.llm.maxTokens;
+  const temperature = options.temperature ?? getModeTemperature();
+  const maxTokens = options.maxTokens || getModeMaxTokens();
 
   if (provider === 'anthropic') {
     const { system, rest } = extractSystem(messages);
@@ -173,9 +176,10 @@ export async function chatSync(messages, options = {}) {
  */
 export async function chatWithTools(messages, tools, options = {}) {
   if (!provider) initLLM();
+  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
-  const temperature = options.temperature ?? config.llm.temperature;
-  const maxTokens = options.maxTokens || config.llm.maxTokens;
+  const temperature = options.temperature ?? getModeTemperature();
+  const maxTokens = options.maxTokens || getModeMaxTokens();
 
   if (provider === 'anthropic') {
     const { system, rest } = extractSystem(messages);
