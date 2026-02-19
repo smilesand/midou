@@ -160,6 +160,8 @@ export function listModes() {
     name: m.name,
     label: m.label,
     description: m.description,
+    maxTokens: m.maxTokens,
+    temperature: m.temperature,
     active: m === currentMode,
   }));
 }
