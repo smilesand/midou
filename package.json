@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/midoumao/midou"
+    "url": "https://github.com/smilesand/midou"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.77.0",
