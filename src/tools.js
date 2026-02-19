@@ -1,0 +1,571 @@
+/**
+ * 工具系统 — midou 与世界交互的能力
+ * 
+ * 这些工具让 midou 能够：
+ * - 读写文件（灵魂文件 + 系统文件）
+ * - 管理记忆
+ * - 自我进化
+ * - 定时提醒
+ * - 加载技能
+ * - 执行系统命令
+ * - 使用 MCP 扩展
+ */
+
+import path from 'path';
+import fs from 'fs/promises';
+import { exec } from 'child_process';
+import { readFile, writeFile, appendFile, deleteFile, listDir, getWorkspacePath } from './soul.js';
+import { addLongTermMemory, writeJournal } from './memory.js';
+import { addReminder, removeReminder, toggleReminder, listReminders, formatReminders } from './scheduler.js';
+import { loadSkillContent, listSkillNames } from './skills.js';
+import { isMCPTool, executeMCPTool } from './mcp.js';
+
+/**
+ * 工具定义（OpenAI Function Calling 格式）
+ */
+export const toolDefinitions = [
+  // ── 灵魂 / 工作区文件操作 ──────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: '读取工作区中的文件。可以读取灵魂文件、记忆、日记，也可以读取源代码。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件路径，相对于工作区根目录。例如：SOUL.md, memory/2026-02-19.md, ../src/index.js',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: '创建或覆写工作区中的文件。可以用来修改灵魂文件、更新身份、修改代码等。如果修改了灵魂文件(SOUL.md)，必须告诉主人。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件路径，相对于工作区根目录',
+          },
+          content: {
+            type: 'string',
+            description: '文件内容',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'append_file',
+      description: '追加内容到文件末尾',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件路径，相对于工作区根目录',
+          },
+          content: {
+            type: 'string',
+            description: '要追加的内容',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_file',
+      description: '删除工作区中的文件',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件路径，相对于工作区根目录',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_dir',
+      description: '列出目录中的文件和子目录',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '目录路径，相对于工作区根目录。留空则列出工作区根目录',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+
+  // ── 记忆系统 ──────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'write_memory',
+      description: '将重要信息写入长期记忆 (MEMORY.md)。用于保存从对话中提炼的重要信息。',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            description: '要记忆的内容',
+          },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_journal',
+      description: '写入今日日记。用于记录当天的想法、对话摘要或重要事件。',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            description: '日记内容',
+          },
+        },
+        required: ['content'],
+      },
+    },
+  },
+
+  // ── 灵魂进化 ────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'evolve_soul',
+      description: '修改自己的灵魂文件 (SOUL.md)。这是自我进化的方式。使用此工具时务必告知主人你做了什么改变。',
+      parameters: {
+        type: 'object',
+        properties: {
+          new_soul: {
+            type: 'string',
+            description: '新的 SOUL.md 完整内容',
+          },
+          reason: {
+            type: 'string',
+            description: '进化的原因——为什么要改变',
+          },
+        },
+        required: ['new_soul', 'reason'],
+      },
+    },
+  },
+
+  // ── 定时提醒 ────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'set_reminder',
+      description: '设置一个定时提醒。可以设置重复提醒（如每20分钟提醒休息）或一次性提醒（如30分钟后提醒开会）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: {
+            type: 'string',
+            description: '提醒内容，例如"该休息一下了"',
+          },
+          interval_minutes: {
+            type: 'number',
+            description: '间隔分钟数。例如 20 表示每 20 分钟或 20 分钟后',
+          },
+          repeat: {
+            type: 'boolean',
+            description: '是否重复。true=每隔 interval 分钟提醒一次，false=仅提醒一次',
+          },
+        },
+        required: ['text', 'interval_minutes'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_reminders',
+      description: '列出当前所有活跃的提醒',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_reminder',
+      description: '取消一个提醒',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'number',
+            description: '要取消的提醒 ID',
+          },
+        },
+        required: ['id'],
+      },
+    },
+  },
+
+  // ── 技能系统 ────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'list_skills',
+      description: '列出所有可用的技能（来自 .claude/skills 和 .midou/skills）',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'load_skill',
+      description: '加载一个技能的完整指令，以便执行该技能定义的任务。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_name: {
+            type: 'string',
+            description: '要加载的技能名称',
+          },
+        },
+        required: ['skill_name'],
+      },
+    },
+  },
+
+  // ── 系统级工具 ──────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description: '在系统终端中执行 shell 命令。可以用来整理文件、安装软件、查看系统信息、运行脚本等。注意：危险命令（如 rm -rf /）会被拦截。',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: '要执行的 shell 命令',
+          },
+          cwd: {
+            type: 'string',
+            description: '命令执行的工作目录（可选，默认为用户主目录）',
+          },
+          timeout: {
+            type: 'number',
+            description: '超时时间（秒），默认 30 秒',
+          },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_system_file',
+      description: '读取系统中任意位置的文件（需使用绝对路径）。可以读取用户目录、项目文件、配置文件等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件的绝对路径，例如 /home/midoumao/Documents/notes.md',
+          },
+          encoding: {
+            type: 'string',
+            description: '文件编码，默认 utf-8。二进制文件使用 base64',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_system_file',
+      description: '写入系统中任意位置的文件（需使用绝对路径）。可以创建或覆盖文件。会自动创建不存在的父目录。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件的绝对路径',
+          },
+          content: {
+            type: 'string',
+            description: '文件内容',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_system_dir',
+      description: '列出系统中任意目录的内容（需使用绝对路径）。返回文件名和类型（文件/目录）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '目录的绝对路径，例如 /home/midoumao/Documents',
+          },
+          details: {
+            type: 'boolean',
+            description: '是否显示详细信息（大小、修改时间）',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  },
+];
+
+// ── 危险命令黑名单 ──────────────────────────────────
+const DANGEROUS_PATTERNS = [
+  /rm\s+(-[rRf]+\s+)*\//,                    // rm -rf /
+  /mkfs/,                                      // 格式化
+  /dd\s+if=.*of=\/dev/,                        // 写入磁盘设备
+  /:(){ :\|:& };:/,                            // fork bomb
+  />\s*\/dev\/[sh]d/,                          // 写入磁盘设备
+  /chmod\s+(-R\s+)?777\s+\//,                  // chmod 777 /
+  /shutdown|reboot|poweroff|halt/,             // 关机重启
+];
+
+/**
+ * 检查命令是否安全
+ */
+function isSafeCommand(command) {
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(command)) return false;
+  }
+  return true;
+}
+
+/**
+ * 执行 shell 命令
+ */
+function runShellCommand(command, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeout = (options.timeout || 30) * 1000;
+    const cwd = options.cwd || process.env.HOME;
+
+    const child = exec(command, { cwd, timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error && error.killed) {
+        resolve({ stdout: stdout || '', stderr: '命令执行超时', exitCode: -1 });
+      } else if (error) {
+        resolve({ stdout: stdout || '', stderr: stderr || error.message, exitCode: error.code || 1 });
+      } else {
+        resolve({ stdout: stdout || '', stderr: stderr || '', exitCode: 0 });
+      }
+    });
+  });
+}
+
+/**
+ * 执行工具调用
+ */
+export async function executeTool(name, args) {
+  // 先检查是否是 MCP 工具
+  if (isMCPTool(name)) {
+    return await executeMCPTool(name, args);
+  }
+
+  switch (name) {
+    // ── 灵魂/工作区文件 ──
+    case 'read_file': {
+      const content = await readFile(args.path);
+      return content || `文件 ${args.path} 不存在`;
+    }
+
+    case 'write_file': {
+      await writeFile(args.path, args.content);
+      return `已写入 ${args.path}`;
+    }
+
+    case 'append_file': {
+      await appendFile(args.path, args.content);
+      return `已追加内容到 ${args.path}`;
+    }
+
+    case 'delete_file': {
+      const success = await deleteFile(args.path);
+      return success ? `已删除 ${args.path}` : `无法删除 ${args.path}`;
+    }
+
+    case 'list_dir': {
+      const files = await listDir(args.path || '.');
+      return files.length > 0 ? files.join('\n') : '（空目录）';
+    }
+
+    // ── 记忆 ──
+    case 'write_memory': {
+      await addLongTermMemory(args.content);
+      return '已写入长期记忆';
+    }
+
+    case 'write_journal': {
+      await writeJournal(args.content);
+      return '已写入今日日记';
+    }
+
+    // ── 灵魂进化 ──
+    case 'evolve_soul': {
+      await writeFile('SOUL.md', args.new_soul);
+      return `灵魂已进化。原因：${args.reason}`;
+    }
+
+    // ── 定时提醒 ──
+    case 'set_reminder': {
+      const reminder = await addReminder(
+        args.text,
+        args.interval_minutes,
+        args.repeat ?? false,
+      );
+      const type = reminder.repeat ? `每 ${reminder.intervalMinutes} 分钟重复` : '一次性';
+      return `已设置提醒 [${reminder.id}]: "${reminder.text}" (${type})，下次触发: ${reminder.nextTrigger}`;
+    }
+
+    case 'list_reminders': {
+      return formatReminders();
+    }
+
+    case 'cancel_reminder': {
+      const removed = await removeReminder(args.id);
+      return removed ? `已取消提醒 [${args.id}]` : `未找到提醒 [${args.id}]`;
+    }
+
+    // ── 技能 ──
+    case 'list_skills': {
+      const skills = await listSkillNames();
+      return skills.length > 0 ? skills.join('\n') : '当前没有可用的技能';
+    }
+
+    case 'load_skill': {
+      const content = await loadSkillContent(args.skill_name);
+      return content || `未找到技能: ${args.skill_name}`;
+    }
+
+    // ── 系统级工具 ──
+    case 'run_command': {
+      if (!isSafeCommand(args.command)) {
+        return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知主人手动操作。';
+      }
+      const result = await runShellCommand(args.command, {
+        cwd: args.cwd,
+        timeout: args.timeout,
+      });
+      let output = '';
+      if (result.stdout) output += result.stdout;
+      if (result.stderr) output += (output ? '\n' : '') + `[stderr] ${result.stderr}`;
+      output += `\n[exit code: ${result.exitCode}]`;
+      // 截断过长的输出
+      if (output.length > 8000) {
+        output = output.slice(0, 8000) + '\n... [输出已截断]';
+      }
+      return output;
+    }
+
+    case 'read_system_file': {
+      try {
+        const encoding = args.encoding || 'utf-8';
+        const content = await fs.readFile(args.path, encoding);
+        // 截断过长内容
+        if (content.length > 10000) {
+          return content.slice(0, 10000) + '\n... [内容已截断，共 ' + content.length + ' 字符]';
+        }
+        return content;
+      } catch (err) {
+        return `无法读取文件 ${args.path}: ${err.message}`;
+      }
+    }
+
+    case 'write_system_file': {
+      try {
+        await fs.mkdir(path.dirname(args.path), { recursive: true });
+        await fs.writeFile(args.path, args.content, 'utf-8');
+        return `已写入 ${args.path}`;
+      } catch (err) {
+        return `无法写入文件 ${args.path}: ${err.message}`;
+      }
+    }
+
+    case 'list_system_dir': {
+      try {
+        const entries = await fs.readdir(args.path, { withFileTypes: true });
+        const lines = entries.map(e => {
+          const type = e.isDirectory() ? '📁' : '📄';
+          return `${type} ${e.name}`;
+        });
+
+        if (args.details) {
+          const detailed = [];
+          for (const e of entries) {
+            try {
+              const stat = await fs.stat(path.join(args.path, e.name));
+              const type = e.isDirectory() ? '📁' : '📄';
+              const size = e.isDirectory() ? '-' : formatSize(stat.size);
+              const mtime = stat.mtime.toISOString().slice(0, 16).replace('T', ' ');
+              detailed.push(`${type} ${e.name.padEnd(30)} ${size.padStart(10)}  ${mtime}`);
+            } catch {
+              detailed.push(`${e.isDirectory() ? '📁' : '📄'} ${e.name}`);
+            }
+          }
+          return detailed.join('\n') || '（空目录）';
+        }
+
+        return lines.join('\n') || '（空目录）';
+      } catch (err) {
+        return `无法列出目录 ${args.path}: ${err.message}`;
+      }
+    }
+
+    default:
+      return `未知工具: ${name}`;
+  }
+}
+
+/**
+ * 格式化文件大小
+ */
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'K';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + 'M';
+  return (bytes / 1024 / 1024 / 1024).toFixed(1) + 'G';
+}

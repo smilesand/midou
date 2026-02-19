@@ -1,0 +1,12 @@
+# npm 发布时排除的文件
+# 灵魂和记忆不随代码发布——它们属于每个人自己
+
+# 个人数据（.env 含密钥，workspace 含灵魂和记忆）
+.env
+workspace/
+
+# 开发文件
+.git/
+.gitignore
+PLAN.md
+node_modules/

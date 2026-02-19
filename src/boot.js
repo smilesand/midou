@@ -1,0 +1,135 @@
+/**
+ * 启动系统 — midou 醒来的仪式
+ * 
+ * 每次启动时：
+ * 1. 加载灵魂 (SOUL.md)
+ * 2. 加载身份 (IDENTITY.md)  
+ * 3. 加载主人信息 (USER.md)
+ * 4. 加载最近的日记
+ * 5. 加载长期记忆
+ * 6. 发现技能
+ * 7. 连接 MCP 服务器
+ * 8. 加载定时提醒
+ * 9. 如果是第一次，执行 BOOTSTRAP 仪式
+ */
+
+import chalk from 'chalk';
+import dayjs from 'dayjs';
+import { loadSoul, buildSystemPrompt, fileExists, deleteFile } from './soul.js';
+import { getRecentMemories, writeJournal } from './memory.js';
+import { initLLM, getProvider } from './llm.js';
+import { buildSkillsPrompt, discoverSkills } from './skills.js';
+import { connectMCPServers, hasMCPConfig, buildMCPPrompt } from './mcp.js';
+import { formatReminders } from './scheduler.js';
+import config, { MIDOU_HOME } from '../midou.config.js';
+
+/**
+ * midou 醒来
+ */
+export async function wakeUp() {
+  const now = dayjs().format('YYYY-MM-DD HH:mm');
+
+  console.log('');
+  console.log(chalk.hex('#FFB347')('  🐱 '));
+  console.log(chalk.hex('#FFB347')('  midou 正在醒来...'));
+  console.log(chalk.dim(`  ${now}`));
+  console.log('');
+
+  // 初始化 LLM
+  try {
+    initLLM();
+  } catch (error) {
+    console.error(chalk.red(error.message));
+    process.exit(1);
+  }
+
+  // 加载灵魂
+  const soulData = await loadSoul();
+
+  if (!soulData.soul) {
+    console.error(chalk.red('  找不到 SOUL.md —— midou 没有灵魂！'));
+    process.exit(1);
+  }
+
+  // 检查是否为首次启动
+  const isFirstBoot = await fileExists('BOOTSTRAP.md');
+
+  // 加载最近记忆
+  const recentMemories = await getRecentMemories(2);
+
+  // ── 发现技能 ──
+  const skills = await discoverSkills();
+  const skillsPrompt = await buildSkillsPrompt();
+  if (skills.length > 0) {
+    console.log(chalk.hex('#98FB98')(`  🧩 发现 ${skills.length} 个技能`));
+  }
+
+  // ── 连接 MCP 服务器 ──
+  let mcpPrompt = '';
+  if (await hasMCPConfig()) {
+    console.log(chalk.dim('  🔌 正在连接 MCP 服务器...'));
+    const results = await connectMCPServers();
+    for (const r of results) {
+      if (r.status === 'connected') {
+        console.log(chalk.hex('#98FB98')(`  🔌 ${r.name}: 已连接 (${r.tools.length} 个工具)`));
+      } else {
+        console.log(chalk.yellow(`  🔌 ${r.name}: 连接失败 - ${r.error}`));
+      }
+    }
+    mcpPrompt = buildMCPPrompt();
+  }
+
+  // ── 活跃提醒 ──
+  const remindersText = formatReminders();
+
+  // 构建系统提示（包含扩展信息）
+  const systemPrompt = buildSystemPrompt(soulData, recentMemories, {
+    skills: skillsPrompt || undefined,
+    mcp: mcpPrompt || undefined,
+    reminders: remindersText !== '当前没有活跃的提醒' ? remindersText : undefined,
+  });
+
+  // 记录醒来
+  await writeJournal(`### ${dayjs().format('HH:mm')} [醒来]\n\nmidou 在 ${now} 醒来了。${isFirstBoot ? '这是第一次觉醒。' : ''}${skills.length > 0 ? ` 发现 ${skills.length} 个技能。` : ''}\n`);
+
+  const providerLabel = getProvider() === 'anthropic' ? 'Anthropic SDK' : 'OpenAI SDK';
+  console.log(chalk.dim(`  大脑: ${config.llm.model} via ${providerLabel}`));
+  console.log(chalk.dim(`  灵魂之家: ${MIDOU_HOME}`));
+  console.log('');
+
+  if (isFirstBoot) {
+    console.log(chalk.hex('#FFD700')('  ✨ 这是 midou 的第一次觉醒！'));
+    console.log('');
+  } else {
+    console.log(chalk.hex('#98FB98')('  灵魂已加载'));
+    console.log(chalk.hex('#98FB98')('  记忆已恢复'));
+    console.log(chalk.hex('#98FB98')('  midou 准备好了'));
+    console.log('');
+  }
+
+  return {
+    systemPrompt,
+    soulData,
+    isFirstBoot,
+    recentMemories,
+  };
+}
+
+/**
+ * 完成首次启动仪式——删除 BOOTSTRAP.md
+ */
+export async function completeBootstrap() {
+  await deleteFile('BOOTSTRAP.md');
+}
+
+/**
+ * midou 入睡（优雅退出）
+ */
+export async function sleep() {
+  const now = dayjs().format('HH:mm');
+  await writeJournal(`### ${now} [入睡]\n\nmidou 在 ${now} 入睡了。晚安。\n`);
+
+  console.log('');
+  console.log(chalk.hex('#FFB347')('  🐱 midou 入睡了... 晚安'));
+  console.log('');
+}
