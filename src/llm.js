@@ -11,6 +11,7 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import config from '../midou.config.js';
+import { getModeMaxTokens, getModeTemperature } from './mode.js';
 
 // ────────────────────── 内部状态 ──────────────────────
 
@@ -146,7 +147,6 @@ function toAnthropicMessages(messages) {
  */
 export async function* chat(messages, options = {}) {
   if (!provider) initLLM();
-  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
   const temperature = options.temperature ?? getModeTemperature();
   const maxTokens = options.maxTokens || getModeMaxTokens();
@@ -182,7 +182,6 @@ export async function* chat(messages, options = {}) {
  */
 export async function chatSync(messages, options = {}) {
   if (!provider) initLLM();
-  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
   const temperature = options.temperature ?? getModeTemperature();
   const maxTokens = options.maxTokens || getModeMaxTokens();
@@ -211,7 +210,6 @@ export async function chatSync(messages, options = {}) {
  */
 export async function chatWithTools(messages, tools, options = {}) {
   if (!provider) initLLM();
-  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
   const temperature = options.temperature ?? getModeTemperature();
   const maxTokens = options.maxTokens || getModeMaxTokens();
@@ -253,7 +251,6 @@ export async function chatWithTools(messages, tools, options = {}) {
  */
 export async function* chatStreamWithTools(messages, tools, options = {}) {
   if (!provider) initLLM();
-  const { getModeMaxTokens, getModeTemperature } = await import('./mode.js');
   const model = options.model || config.llm.model;
   const temperature = options.temperature ?? getModeTemperature();
   const maxTokens = options.maxTokens || getModeMaxTokens();

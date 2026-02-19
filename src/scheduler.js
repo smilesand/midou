@@ -9,6 +9,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import chalk from 'chalk';
 import dayjs from 'dayjs';
 import config from '../midou.config.js';
 
@@ -154,7 +155,11 @@ export async function startScheduler(onFire) {
   await loadReminders();
 
   // 每 30 秒检查一次提醒
-  schedulerTimer = setInterval(() => checkReminders(onFire), 30 * 1000);
+  schedulerTimer = setInterval(() => {
+    checkReminders(onFire).catch(err => {
+      console.error(chalk.dim(`  ⏰ 提醒检查异常: ${err.message}`));
+    });
+  }, 30 * 1000);
 
   return {
     stop: stopScheduler,

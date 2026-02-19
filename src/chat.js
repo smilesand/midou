@@ -85,6 +85,7 @@ export class ChatEngine {
               if (this.showThinking) {
                 const w = Math.min(process.stdout.columns || 50, 50);
                 process.stdout.write('\n' + chalk.hex('#C9B1FF')('  ┌─ 💭 ') + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 10))) + '\n');
+                process.stdout.write(chalk.hex('#C9B1FF').dim('  │ '));
               }
               break;
 
@@ -170,7 +171,12 @@ export class ChatEngine {
 
       } catch (error) {
         // 失败时回退到纯流式（无工具）
-        console.error(chalk.yellow(`  ⚠  ${error.message}`));
+        if (iterationText) {
+          process.stdout.write('\n');
+          console.error(chalk.yellow(`  ⚠  ${error.message}，重试中…`));
+        } else {
+          console.error(chalk.yellow(`  ⚠  ${error.message}`));
+        }
         fullResponse = await this._streamResponse();
         break;
       }

@@ -184,9 +184,13 @@ async function main() {
     }
 
     // 检查 .env 是否配置了 API Key
-    const envContent = await import('fs').then(f =>
-      f.readFileSync(path.join(MIDOU_HOME, '.env'), 'utf-8').toString()
-    );
+    let envContent = '';
+    try {
+      const f = await import('fs');
+      envContent = f.readFileSync(path.join(MIDOU_HOME, '.env'), 'utf-8');
+    } catch {
+      envContent = 'your-api-key-here';
+    }
     if (envContent.includes('your-api-key-here')) {
       console.log('');
       console.log(chalk.yellow('  ⚠️  请先编辑配置文件填入 API Key：'));
@@ -394,11 +398,11 @@ async function main() {
             console.log(chalk.hex('#98FB98')(`  ✅ 已切换到 ${newMode.label}`));
             // 重建系统提示词
             const strategy = getPromptStrategy();
-            const soul = loadSoul();
-            const journals = getRecentMemories(strategy.journalDays || 2);
-            const skillsPrompt = strategy.includeSkills ? buildSkillsPrompt(await discoverSkills()) : '';
-            const mcpPrompt = strategy.includeMCP ? buildMCPPrompt() : '';
-            const newPrompt = buildSystemPrompt(soul, journals, { skillsPrompt, mcpPrompt }, strategy);
+            const soulData2 = await loadSoul();
+            const journals2 = await getRecentMemories(strategy.journalDays || 2);
+            const sp = strategy.includeSkills ? await buildSkillsPrompt() : '';
+            const mp = strategy.includeMCP ? buildMCPPrompt() : '';
+            const newPrompt = buildSystemPrompt(soulData2, journals2, { skills: sp, mcp: mp }, strategy);
             engine.updateSystemPrompt(newPrompt);
             console.log(chalk.dim(`  系统提示词已按 ${cmdArg} 模式重建`));
             console.log('');
@@ -464,8 +468,8 @@ async function main() {
     rl.prompt();
   });
 
-  rl.on('close', () => {
-    gracefulExit();
+  rl.on('close', async () => {
+    await gracefulExit();
   });
 }
 

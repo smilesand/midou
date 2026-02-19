@@ -140,10 +140,17 @@ class MCPConnection {
   /**
    * 发送 JSON-RPC 请求
    */
-  _sendRequest(method, params = {}) {
+  _sendRequest(method, params = {}, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       const id = ++this._requestId;
-      this._pendingRequests.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this._pendingRequests.delete(id);
+        reject(new Error(`MCP 请求 ${method} 超时 (${timeoutMs}ms)`));
+      }, timeoutMs);
+      this._pendingRequests.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
 
       const msg = JSON.stringify({
         jsonrpc: '2.0',
@@ -217,6 +224,9 @@ class MCPConnection {
       this.process = null;
     }
     this.connected = false;
+    for (const { reject } of this._pendingRequests.values()) {
+      reject(new Error(`MCP 服务器 ${this.name} 已断开`));
+    }
     this._pendingRequests.clear();
   }
 }
@@ -306,13 +316,10 @@ export function isMCPTool(toolName) {
  * 执行 MCP 工具调用
  */
 export async function executeMCPTool(toolName, args) {
-  // 解析：mcp_{serverName}_{toolName}
-  const parts = toolName.replace(/^mcp_/, '').split('_');
-
-  // 找到匹配的服务器
   for (const [serverName, conn] of connections) {
-    if (toolName.startsWith(`mcp_${serverName}_`)) {
-      const actualToolName = toolName.replace(`mcp_${serverName}_`, '');
+    const prefix = `mcp_${serverName}_`;
+    if (toolName.startsWith(prefix)) {
+      const actualToolName = toolName.slice(prefix.length);
       return await conn.callTool(actualToolName, args);
     }
   }
