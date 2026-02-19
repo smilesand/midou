@@ -31,8 +31,7 @@ export async function wakeUp() {
   const now = dayjs().format('YYYY-MM-DD HH:mm');
 
   console.log('');
-  console.log(chalk.hex('#FFB347')('  🐱 '));
-  console.log(chalk.hex('#FFB347')('  midou 正在醒来...'));
+  console.log(chalk.hex('#FFB347')('  🐱 midou 正在醒来…'));
   console.log(chalk.dim(`  ${now}`));
   console.log('');
 
@@ -69,20 +68,20 @@ export async function wakeUp() {
     skills = await discoverSkills();
     skillsPrompt = await buildSkillsPrompt();
     if (skills.length > 0) {
-      console.log(chalk.hex('#98FB98')(`  🧩 发现 ${skills.length} 个技能`));
+      console.log(chalk.dim('  ▸ ') + chalk.hex('#98FB98')(`发现 ${skills.length} 个技能`));
     }
   }
 
   // ── 连接 MCP 服务器（模式允许时）──
   let mcpPrompt = '';
   if (strategy.includeMCP && await hasMCPConfig()) {
-    console.log(chalk.dim('  🔌 正在连接 MCP 服务器...'));
+    console.log(chalk.dim('  ▸ 正在连接 MCP 服务器…'));
     const results = await connectMCPServers();
     for (const r of results) {
       if (r.status === 'connected') {
-        console.log(chalk.hex('#98FB98')(`  🔌 ${r.name}: 已连接 (${r.tools.length} 个工具)`));
+        console.log(chalk.dim('    ') + chalk.green('●') + chalk.dim(` ${r.name} (${r.tools.length} 工具)`));
       } else {
-        console.log(chalk.yellow(`  🔌 ${r.name}: 连接失败 - ${r.error}`));
+        console.log(chalk.dim('    ') + chalk.red('●') + chalk.dim(` ${r.name}`) + chalk.yellow(' 失败'));
       }
     }
     mcpPrompt = buildMCPPrompt();
@@ -102,18 +101,20 @@ export async function wakeUp() {
   await writeJournal(`### ${dayjs().format('HH:mm')} [醒来]\n\nmidou 在 ${now} 醒来了。${isFirstBoot ? '这是第一次觉醒。' : ''}${skills.length > 0 ? ` 发现 ${skills.length} 个技能。` : ''}\n`);
 
   const providerLabel = getProvider() === 'anthropic' ? 'Anthropic SDK' : 'OpenAI SDK';
-  console.log(chalk.dim(`  大脑: ${config.llm.model} via ${providerLabel}`));
-  console.log(chalk.dim(`  模式: ${mode.label}`));
-  console.log(chalk.dim(`  灵魂之家: ${MIDOU_HOME}`));
+  const W = Math.min(process.stdout.columns || 48, 48);
+  const ruler = chalk.dim('  ' + '─'.repeat(W));
+  console.log(ruler);
+  console.log(chalk.dim('  大脑  ') + chalk.cyan(`${config.llm.model}`) + chalk.dim(` via ${providerLabel}`));
+  console.log(chalk.dim('  模式  ') + chalk.cyan(mode.label));
+  console.log(chalk.dim('  之家  ') + chalk.cyan(MIDOU_HOME));
+  console.log(ruler);
   console.log('');
 
   if (isFirstBoot) {
     console.log(chalk.hex('#FFD700')('  ✨ 这是 midou 的第一次觉醒！'));
     console.log('');
   } else {
-    console.log(chalk.hex('#98FB98')('  灵魂已加载'));
-    console.log(chalk.hex('#98FB98')('  记忆已恢复'));
-    console.log(chalk.hex('#98FB98')('  midou 准备好了'));
+    console.log(chalk.hex('#98FB98')('  ✦ midou 准备好了'));
     console.log('');
   }
 
@@ -140,6 +141,6 @@ export async function sleep() {
   await writeJournal(`### ${now} [入睡]\n\nmidou 在 ${now} 入睡了。晚安。\n`);
 
   console.log('');
-  console.log(chalk.hex('#FFB347')('  🐱 midou 入睡了... 晚安'));
+  console.log(chalk.hex('#FFB347')('  🐱 midou 入睡了…晚安'));
   console.log('');
 }

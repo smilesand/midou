@@ -31,13 +31,15 @@ import config, { MIDOU_HOME, MIDOU_PKG } from '../midou.config.js';
 import { isInitialized, initSoulDir, migrateFromWorkspace, MIDOU_SOUL_DIR } from './init.js';
 
 // ===== 猫爪 ASCII Art =====
-const LOGO = `
-    /\\_/\\  
-   ( o.o ) 
-    > ^ <   ${chalk.hex('#FFB347').bold('midou')}
-   /|   |\\  ${chalk.dim('你的 AI 伙伴')}
-  (_|   |_)
-`;
+const LOGO = [
+  '',
+  chalk.hex('#FFB347')('    /\\_/\\'),
+  chalk.hex('#FFB347')('   ( o.o )'),
+  chalk.hex('#FFB347')('    > ^ <   ') + chalk.hex('#FFB347').bold('midou'),
+  chalk.hex('#FFB347')('   /|   |\\  ') + chalk.dim('你的 AI 伙伴'),
+  chalk.hex('#FFB347')('  (_|   |_)'),
+  '',
+].join('\n');
 
 /**
  * 特殊命令处理
@@ -57,18 +59,36 @@ const COMMANDS = {
   '/skills': '查看可用技能',
   '/mcp': '查看 MCP 连接状态',
   '/mode': '切换功耗模式 (eco/normal/full)',
+  '/think': '查看上一次的思考过程',
 };
 
 /**
  * 显示帮助信息
  */
 function showHelp() {
+  const groups = [
+    ['对话', ['/help', '/think']],
+    ['灵魂', ['/soul', '/evolve', '/memory']],
+    ['系统', ['/status', '/mode', '/heartbeat', '/where']],
+    ['扩展', ['/skills', '/mcp', '/reminders']],
+  ];
+
   console.log('');
-  console.log(chalk.hex('#FFB347').bold('  midou 命令：'));
+  console.log(chalk.hex('#FFB347').bold('  🐱 midou 命令'));
   console.log('');
-  for (const [cmd, desc] of Object.entries(COMMANDS)) {
-    console.log(`  ${chalk.cyan(cmd.padEnd(14))} ${chalk.dim(desc)}`);
+
+  for (const [groupName, cmds] of groups) {
+    console.log(chalk.dim(`  ${groupName}`));
+    for (const cmd of cmds) {
+      const desc = COMMANDS[cmd];
+      if (desc) {
+        console.log(`    ${chalk.cyan(cmd.padEnd(14))}${chalk.dim(desc)}`);
+      }
+    }
+    console.log('');
   }
+
+  console.log(chalk.dim('  /quit /exit /bye 退出对话'));
   console.log('');
   console.log(chalk.dim('  直接输入文字即可与 midou 对话'));
   console.log('');
@@ -81,30 +101,28 @@ function showStatus() {
   const hb = getHeartbeatStatus();
   const prov = getProvider() === 'anthropic' ? 'Anthropic SDK' : 'OpenAI SDK';
   const mcpStatus = getMCPStatus();
+  const mode = getMode();
+
   console.log('');
   console.log(chalk.hex('#FFB347').bold('  🐱 midou 状态'));
-  console.log(chalk.dim('  ─────────────────'));
-  console.log(`  大脑: ${chalk.cyan(config.llm.model)} via ${chalk.cyan(prov)}`);
-  console.log(`  灵魂之家: ${chalk.cyan(MIDOU_HOME)}`);
-  console.log(`  代码位置: ${chalk.dim(MIDOU_PKG)}`);
-  console.log(`  心跳: ${hb.running ? chalk.green('运行中') : chalk.red('已停止')}`);
-  console.log(`  心跳次数: ${hb.count}`);
-  console.log(`  心跳间隔: ${hb.interval} 分钟`);
-  console.log(`  活跃时段: ${hb.activeHours.start}:00 - ${hb.activeHours.end}:00`);
-  console.log(`  当前活跃: ${hb.isActiveNow ? chalk.green('是') : chalk.yellow('否')}`);
-  // 提醒状态
+  console.log('');
+  console.log(chalk.dim('  大脑     ') + chalk.cyan(config.llm.model) + chalk.dim(` via ${prov}`));
+  console.log(chalk.dim('  模式     ') + chalk.cyan(mode.label));
+  console.log(chalk.dim('  心跳     ') + (hb.running ? chalk.green('● 运行中') : chalk.red('○ 已停止')) + chalk.dim(` (${hb.count} 次 · 每 ${hb.interval} 分钟)`));
+  console.log(chalk.dim('  活跃     ') + chalk.dim(`${hb.activeHours.start}:00–${hb.activeHours.end}:00 `) + (hb.isActiveNow ? chalk.green('●') : chalk.yellow('○')));
+
   const reminderText = formatReminders();
-  console.log(`  提醒: ${reminderText === '当前没有活跃的提醒' ? chalk.dim('无') : chalk.green('活跃')}`);
-  // MCP 状态
+  console.log(chalk.dim('  提醒     ') + (reminderText === '当前没有活跃的提醒' ? chalk.dim('无') : chalk.green('● 活跃')));
+
   if (mcpStatus.length > 0) {
     const connected = mcpStatus.filter(s => s.connected).length;
-    console.log(`  MCP: ${chalk.cyan(`${connected}/${mcpStatus.length} 个服务器已连接`)}`);
+    console.log(chalk.dim('  MCP      ') + chalk.cyan(`${connected}/${mcpStatus.length}`) + chalk.dim(' 已连接'));
   } else {
-    console.log(`  MCP: ${chalk.dim('未配置')}`);
+    console.log(chalk.dim('  MCP      未配置'));
   }
-  // 功耗模式
-  const mode = getMode();
-  console.log(`  模式: ${chalk.cyan(mode.label)}`);
+
+  console.log(chalk.dim('  之家     ') + chalk.cyan(MIDOU_HOME));
+  console.log(chalk.dim('  代码     ') + chalk.dim(MIDOU_PKG));
   console.log('');
 }
 
@@ -192,25 +210,25 @@ async function main() {
   // 启动心跳
   const heartbeat = startHeartbeat((msg) => {
     console.log('');
-    console.log(chalk.hex('#FFD700')('  💓 [心跳] ') + chalk.dim(msg.slice(0, 100)));
+    console.log(chalk.hex('#FF6B9D')('  💓 ') + chalk.dim(msg.slice(0, 100)));
     console.log('');
   });
 
   // 启动定时提醒调度器
   await startScheduler((reminder) => {
     console.log('');
-    console.log(chalk.hex('#FFD700')(`  ⏰ [提醒] `) + chalk.bold(reminder.text));
+    console.log(chalk.hex('#FFD700')('  ⏰ ') + chalk.bold(reminder.text));
     if (reminder.repeat) {
-      console.log(chalk.dim(`     (每 ${reminder.intervalMinutes} 分钟，第 ${reminder.firedCount} 次)`));
+      console.log(chalk.dim(`     每 ${reminder.intervalMinutes} 分钟 · 第 ${reminder.firedCount} 次`));
     }
     console.log('');
   });
 
   // 如果是首次启动，执行觉醒仪式
   if (isFirstBoot) {
-    console.log(chalk.hex('#FFD700')('  midou 正在进行觉醒仪式...'));
+    console.log(chalk.hex('#FFD700')('  ✨ midou 正在进行觉醒仪式…'));
     console.log('');
-    process.stdout.write(chalk.hex('#FFB347')('  midou: '));
+    process.stdout.write(chalk.hex('#FFB347')('  🐱 › '));
     await engine.talk('你好，我是你的创造者。你刚刚醒来，请按照觉醒指引介绍你自己吧。');
     console.log('');
     await completeBootstrap();
@@ -220,7 +238,7 @@ async function main() {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: chalk.cyan('  你: '),
+    prompt: chalk.cyan('  你 › '),
     terminal: true,
   });
 
@@ -238,7 +256,7 @@ async function main() {
   process.on('SIGTERM', gracefulExit);
 
   // 显示帮助提示
-  console.log(chalk.dim('  输入 /help 查看命令列表，或直接开始对话'));
+  console.log(chalk.dim('  输入 /help 查看命令 · 直接输入文字开始对话'));
   console.log('');
 
   rl.prompt();
@@ -266,11 +284,11 @@ async function main() {
           return;
 
         case '/heartbeat':
-          console.log(chalk.dim('  🐱 手动心跳中...'));
+          console.log(chalk.dim('  � 手动心跳中…'));
           await manualBeat((msg) => {
             console.log(chalk.hex('#FFB347')(`  ${msg}`));
           });
-          console.log(chalk.dim('  心跳完成'));
+          console.log(chalk.dim('  💓 完成'));
           rl.prompt();
           return;
 
@@ -303,9 +321,9 @@ async function main() {
           return;
 
         case '/evolve':
-          console.log(chalk.dim('  🐱 midou 正在自我反思...'));
+          console.log(chalk.dim('  🧬 midou 正在自我反思…'));
           console.log('');
-          process.stdout.write(chalk.hex('#FFB347')('  midou: '));
+          process.stdout.write(chalk.hex('#FFB347')('  🐱 › '));
           await engine.talk('请进行一次深度自我反思。回顾我们的对话和你的记忆，思考你想要如何进化。如果你决定修改自己的灵魂，请使用 evolve_soul 工具。');
           console.log('');
           rl.prompt();
@@ -313,8 +331,8 @@ async function main() {
 
         case '/where':
           console.log('');
-          console.log(chalk.hex('#FFB347')(`  灵魂之家: ${MIDOU_HOME}`));
-          console.log(chalk.dim(`  代码位置: ${MIDOU_PKG}`));
+          console.log(chalk.dim('  之家  ') + chalk.cyan(MIDOU_HOME));
+          console.log(chalk.dim('  代码  ') + chalk.dim(MIDOU_PKG));
           console.log('');
           rl.prompt();
           return;
@@ -356,8 +374,8 @@ async function main() {
             console.log(chalk.dim(`  创建 ${MIDOU_HOME}/mcp.json 来配置`));
           } else {
             for (const s of mcpStatus) {
-              const state = s.connected ? chalk.green('✅') : chalk.red('❌');
-              console.log(`  ${state} ${chalk.cyan(s.name)} — ${s.toolCount} 个工具`);
+              const state = s.connected ? chalk.green('●') : chalk.red('●');
+              console.log(`  ${state} ${chalk.cyan(s.name)} ${chalk.dim('—')} ${s.toolCount} ${chalk.dim('工具')}`);
               if (s.tools.length > 0) {
                 console.log(chalk.dim(`    工具: ${s.tools.join(', ')}`));
               }
@@ -391,15 +409,36 @@ async function main() {
             console.log(chalk.hex('#FFD700').bold('  ⚡ 功耗模式'));
             console.log(chalk.dim('  ─────────────────'));
             for (const m of modes) {
-              const marker = m.name === current.name ? chalk.green(' ◀ 当前') : '';
-              console.log(`  ${m.label}${marker}`);
-              console.log(chalk.dim(`    maxTokens: ${m.maxTokens}, temp: ${m.temperature}`));
+              const active = m.name === current.name;
+              const marker = active ? chalk.green(' ◄') : '';
+              const label = active ? chalk.hex('#FFB347')(m.label) : chalk.dim(m.label);
+              console.log(`  ${label}${marker}`);
+              console.log(chalk.dim(`    ${m.maxTokens} tokens · temp ${m.temperature}`));
               console.log(chalk.dim(`    ${m.description}`));
             }
             console.log('');
             console.log(chalk.dim('  用法: /mode eco | /mode normal | /mode full'));
             console.log('');
           }
+          rl.prompt();
+          return;
+        }
+
+        case '/think': {
+          const thinking = engine.lastThinking;
+          console.log('');
+          if (thinking) {
+            console.log(chalk.hex('#C9B1FF').bold('  💭 上一次的思考过程'));
+            console.log('');
+            const lines = thinking.split('\n');
+            for (const line of lines) {
+              console.log(chalk.hex('#C9B1FF').dim(`  │ ${line}`));
+            }
+            console.log(chalk.hex('#C9B1FF').dim(`  └─ ${thinking.length} 字`));
+          } else {
+            console.log(chalk.dim('  没有思考记录'));
+          }
+          console.log('');
           rl.prompt();
           return;
         }
@@ -413,12 +452,12 @@ async function main() {
 
     // 正常对话
     console.log('');
-    process.stdout.write(chalk.hex('#FFB347')('  midou: '));
+    process.stdout.write(chalk.hex('#FFB347')('  🐱 › '));
 
     try {
       await engine.talk(input);
     } catch (error) {
-      console.log(chalk.red(`\n  出了点问题: ${error.message}`));
+      console.log(chalk.red(`\n  ⚠  出了点问题: ${error.message}`));
     }
 
     console.log('');
