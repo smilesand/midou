@@ -4,8 +4,14 @@
  * 让 midou 可以设定提醒和定时任务，
  * 就像猫咪的生物钟一样精准。
  * 
- * 提醒存储在 ~/.midou/reminders.json
- * 永久定时任务存储在 ~/.midou/schedules.json（每次启动自动加载）
+ * 所有任务统一存储在 ~/.midou/reminders.json，每次启动自动加载。
+ * 
+ * 支持的任务类型：
+ *   once     — 一次性，N 分钟后触发，触发后自动删除
+ *   interval — 每隔 N 分钟重复触发
+ *   daily    — 每天指定时间触发
+ *   weekly   — 每周指定星期和时间触发
+ *   monthly  — 每月指定日期和时间触发
  */
 
 import fs from 'fs/promises';
@@ -16,10 +22,8 @@ import notifier from 'node-notifier';
 import config from '../midou.config.js';
 
 const REMINDERS_FILE = path.join(config.workspace.root, 'reminders.json');
-const SCHEDULES_FILE = path.join(config.workspace.root, 'schedules.json');
 
 let reminders = [];
-let schedules = [];
 let schedulerTimer = null;
 let nextId = 1;
 
@@ -45,122 +49,66 @@ async function saveReminders() {
   await fs.writeFile(REMINDERS_FILE, JSON.stringify({ reminders, nextId }, null, 2), 'utf-8');
 }
 
-// ─── 永久定时任务（schedules） ────────────────────────
-
 /**
- * 计算某个 schedule 的下一次触发时间
- * @param {object} schedule - { time: "HH:MM", repeat: "daily"|"weekly"|"monthly", weekday?: 0-6, day?: 1-31 }
- * @returns {Date}
+ * 计算 daily/weekly/monthly 类型的下一次触发时间
  */
-function calcNextTrigger(schedule) {
-  const [h, m] = schedule.time.split(':').map(Number);
+function calcNextTrigger(reminder) {
+  const [h, m] = reminder.time.split(':').map(Number);
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0);
 
-  if (schedule.repeat === 'weekly' && schedule.weekday != null) {
-    // weekday: 0=周日, 1=周一, ... 6=周六
-    let daysUntil = (schedule.weekday - now.getDay() + 7) % 7;
+  if (reminder.type === 'weekly' && reminder.weekday != null) {
+    let daysUntil = (reminder.weekday - now.getDay() + 7) % 7;
     const target = new Date(today.getTime() + daysUntil * 86400000);
     if (target <= now) target.setTime(target.getTime() + 7 * 86400000);
     return target;
   }
 
-  if (schedule.repeat === 'monthly' && schedule.day != null) {
-    const target = new Date(now.getFullYear(), now.getMonth(), schedule.day, h, m, 0);
+  if (reminder.type === 'monthly' && reminder.day != null) {
+    const target = new Date(now.getFullYear(), now.getMonth(), reminder.day, h, m, 0);
     if (target <= now) target.setMonth(target.getMonth() + 1);
     return target;
   }
 
-  // daily（默认）
+  // daily
   if (today <= now) today.setDate(today.getDate() + 1);
   return today;
 }
 
 /**
- * 加载永久定时任务
- */
-async function loadSchedules() {
-  try {
-    const data = await fs.readFile(SCHEDULES_FILE, 'utf-8');
-    schedules = JSON.parse(data) || [];
-  } catch {
-    schedules = [];
-  }
-}
-
-/**
- * 持久化永久定时任务
- */
-async function saveSchedules() {
-  await fs.writeFile(SCHEDULES_FILE, JSON.stringify(schedules, null, 2), 'utf-8');
-}
-
-/**
- * 添加永久定时任务
- * @param {string} text - 任务描述
- * @param {string} time - 触发时间 "HH:MM"
- * @param {string} repeat - 重复方式: "daily" | "weekly" | "monthly"
- * @param {number} [weekday] - 周几 (0=日 1=一 ... 6=六)，weekly 时必填
- * @param {number} [day] - 几号 (1-31)，monthly 时必填
- */
-export async function addSchedule(text, time, repeat = 'daily', weekday = null, day = null) {
-  const id = `sch_${Date.now()}`;
-  const schedule = { id, text, time, repeat, enabled: true };
-  if (repeat === 'weekly' && weekday != null) schedule.weekday = weekday;
-  if (repeat === 'monthly' && day != null) schedule.day = day;
-  schedule.nextTrigger = calcNextTrigger(schedule).toISOString();
-  schedules.push(schedule);
-  await saveSchedules();
-  return schedule;
-}
-
-/**
- * 删除永久定时任务
- */
-export async function removeSchedule(id) {
-  const idx = schedules.findIndex(s => s.id === id);
-  if (idx === -1) return false;
-  schedules.splice(idx, 1);
-  await saveSchedules();
-  return true;
-}
-
-/**
- * 列出永久定时任务
- */
-export function listSchedules() {
-  return schedules.map(s => ({
-    id: s.id,
-    text: s.text,
-    time: s.time,
-    repeat: s.repeat,
-    weekday: s.weekday,
-    day: s.day,
-    enabled: s.enabled,
-    nextTrigger: s.nextTrigger,
-  }));
-}
-
-/**
- * 添加提醒
+ * 添加提醒 / 定时任务
  * @param {string} text - 提醒内容
- * @param {number} intervalMinutes - 间隔（分钟）
- * @param {boolean} repeat - 是否重复
- * @param {string} [triggerAt] - 指定触发时间 (ISO 字符串)，如果设置则 intervalMinutes 被忽略
- * @returns {object} 创建的提醒对象
+ * @param {object} opts
+ * @param {string}  [opts.type='once']          - 类型: once | interval | daily | weekly | monthly
+ * @param {number}  [opts.intervalMinutes]       - once/interval 的分钟数
+ * @param {string}  [opts.time]                  - daily/weekly/monthly 的触发时间 "HH:MM"
+ * @param {number}  [opts.weekday]               - weekly 的星期几 (0=日 1=一 … 6=六)
+ * @param {number}  [opts.day]                   - monthly 的日期 (1-31)
+ * @param {string}  [opts.triggerAt]             - 直接指定首次触发时间 (ISO)
  */
-export async function addReminder(text, intervalMinutes, repeat = false, triggerAt = null) {
+export async function addReminder(text, opts = {}) {
+  const type = opts.type || (opts.intervalMinutes != null ? (opts.repeat ? 'interval' : 'once') : 'once');
   const now = Date.now();
+
   const reminder = {
     id: nextId++,
     text,
-    intervalMinutes,
-    repeat,
-    createdAt: new Date(now).toISOString(),
-    nextTrigger: triggerAt || new Date(now + intervalMinutes * 60 * 1000).toISOString(),
-    firedCount: 0,
+    type,
     active: true,
+    createdAt: new Date(now).toISOString(),
   };
+
+  if (type === 'once' || type === 'interval') {
+    reminder.intervalMinutes = opts.intervalMinutes || 1;
+    reminder.nextTrigger = opts.triggerAt || new Date(now + reminder.intervalMinutes * 60 * 1000).toISOString();
+  } else {
+    // daily / weekly / monthly
+    reminder.time = opts.time || '09:00';
+    if (type === 'weekly') reminder.weekday = opts.weekday ?? 1;
+    if (type === 'monthly') reminder.day = opts.day ?? 1;
+    reminder.nextTrigger = calcNextTrigger(reminder).toISOString();
+  }
+
   reminders.push(reminder);
   await saveReminders();
   return reminder;
@@ -178,93 +126,52 @@ export async function removeReminder(id) {
 }
 
 /**
- * 暂停/恢复提醒
- */
-export async function toggleReminder(id) {
-  const reminder = reminders.find(r => r.id === id);
-  if (!reminder) return null;
-  reminder.active = !reminder.active;
-  await saveReminders();
-  return reminder;
-}
-
-/**
- * 列出所有提醒
- */
-export function listReminders() {
-  return reminders.map(r => ({
-    id: r.id,
-    text: r.text,
-    intervalMinutes: r.intervalMinutes,
-    repeat: r.repeat,
-    active: r.active,
-    nextTrigger: r.nextTrigger,
-    firedCount: r.firedCount,
-  }));
-}
-
-/**
- * 检查并触发到期的提醒和永久任务
- * @param {function} onFire - 触发时的回调 (item) => void
+ * 检查并触发到期的提醒
+ * @param {function} onFire - 触发时的回调 (reminder) => void
  */
 async function checkReminders(onFire) {
   const now = Date.now();
   let changed = false;
+  const toRemove = [];
 
-  // 检查普通提醒
   for (const reminder of reminders) {
     if (!reminder.active) continue;
 
     const triggerTime = new Date(reminder.nextTrigger).getTime();
     if (now >= triggerTime) {
-      reminder.firedCount++;
-
       // 先更新状态，再通知（确保回调中获取的 summary 是最新的）
-      if (reminder.repeat) {
-        reminder.nextTrigger = new Date(now + reminder.intervalMinutes * 60 * 1000).toISOString();
-      } else {
-        reminder.active = false;
+      switch (reminder.type) {
+        case 'once':
+          toRemove.push(reminder.id);
+          break;
+        case 'interval':
+          reminder.nextTrigger = new Date(now + reminder.intervalMinutes * 60 * 1000).toISOString();
+          break;
+        case 'daily':
+        case 'weekly':
+        case 'monthly':
+          reminder.nextTrigger = calcNextTrigger(reminder).toISOString();
+          break;
+        default:
+          // 兼容旧数据：无 type 字段的视为 once
+          toRemove.push(reminder.id);
+          break;
       }
 
       changed = true;
 
-      if (onFire) {
-        onFire(reminder);
-      }
+      if (onFire) onFire(reminder);
       sendSystemNotification(reminder);
     }
   }
 
+  // 一次性任务触发后直接删除
+  if (toRemove.length > 0) {
+    reminders = reminders.filter(r => !toRemove.includes(r.id));
+  }
+
   if (changed) {
-    const inactive = reminders.filter(r => !r.active);
-    if (inactive.length > 50) {
-      reminders = [
-        ...reminders.filter(r => r.active),
-        ...inactive.slice(-50),
-      ];
-    }
     await saveReminders();
-  }
-
-  // 检查永久定时任务
-  let schedChanged = false;
-  for (const sch of schedules) {
-    if (!sch.enabled) continue;
-    const triggerTime = new Date(sch.nextTrigger).getTime();
-    if (now >= triggerTime) {
-      // 计算下一次触发时间
-      sch.nextTrigger = calcNextTrigger(sch).toISOString();
-      schedChanged = true;
-
-      if (onFire) {
-        onFire({ text: sch.text, id: sch.id, isSchedule: true });
-      }
-      sendSystemNotification({ text: `[定时] ${sch.text}` });
-    }
-  }
-
-  if (schedChanged) {
-    await saveSchedules();
   }
 }
 
@@ -273,30 +180,33 @@ async function checkReminders(onFire) {
  */
 export async function startScheduler(onFire) {
   await loadReminders();
-  await loadSchedules();
 
-  // 启动时重新计算永久任务的下次触发时间（防止旧时间导致集中触发）
-  let schedNeedSave = false;
+  // 启动时重新计算 daily/weekly/monthly 的下次触发时间（防止离线期间堆积触发）
+  let needSave = false;
   const now = Date.now();
-  for (const sch of schedules) {
-    if (!sch.enabled) continue;
-    if (new Date(sch.nextTrigger).getTime() <= now) {
-      sch.nextTrigger = calcNextTrigger(sch).toISOString();
-      schedNeedSave = true;
+  for (const r of reminders) {
+    if (!r.active) continue;
+    if (['daily', 'weekly', 'monthly'].includes(r.type) && new Date(r.nextTrigger).getTime() <= now) {
+      r.nextTrigger = calcNextTrigger(r).toISOString();
+      needSave = true;
     }
   }
-  if (schedNeedSave) await saveSchedules();
+  // 兼容旧数据：给没有 type 的提醒补上 type
+  for (const r of reminders) {
+    if (!r.type) {
+      r.type = r.repeat ? 'interval' : 'once';
+      needSave = true;
+    }
+  }
+  if (needSave) await saveReminders();
 
-  // 每 30 秒检查一次提醒
   schedulerTimer = setInterval(() => {
     checkReminders(onFire).catch(err => {
       console.error(chalk.dim(`  ⏰ 提醒检查异常: ${err.message}`));
     });
   }, 30 * 1000);
 
-  return {
-    stop: stopScheduler,
-  };
+  return { stop: stopScheduler };
 }
 
 /**
@@ -310,56 +220,34 @@ export function stopScheduler() {
 }
 
 /**
- * 格式化提醒列表为可读字符串（包含普通提醒和永久定时任务）
+ * 格式化提醒列表为可读字符串
  */
 export function formatReminders() {
   const active = reminders.filter(r => r.active);
-  const enabledSchedules = schedules.filter(s => s.enabled);
-  const lines = [];
+  if (active.length === 0) return '当前没有活跃的定时任务';
 
-  if (active.length > 0) {
-    lines.push('── 提醒 ──');
-    for (const r of active) {
-      const next = dayjs(r.nextTrigger).format('HH:mm:ss');
-      const type = r.repeat ? `每 ${r.intervalMinutes} 分钟` : '一次性';
-      lines.push(`[${r.id}] ${r.text} — ${type}，下次: ${next}`);
+  const weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
+  return active.map(r => {
+    const next = dayjs(r.nextTrigger).format('MM-DD HH:mm');
+    let desc;
+    switch (r.type) {
+      case 'interval':
+        desc = `每 ${r.intervalMinutes} 分钟`;
+        break;
+      case 'daily':
+        desc = `每天 ${r.time}`;
+        break;
+      case 'weekly':
+        desc = `每周${weekdayNames[r.weekday]} ${r.time}`;
+        break;
+      case 'monthly':
+        desc = `每月${r.day}号 ${r.time}`;
+        break;
+      default:
+        desc = '一次性';
     }
-  }
-
-  if (enabledSchedules.length > 0) {
-    lines.push('── 永久定时任务 ──');
-    const repeatLabels = { daily: '每天', weekly: '每周', monthly: '每月' };
-    const weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
-    for (const s of enabledSchedules) {
-      let desc = `${repeatLabels[s.repeat] || s.repeat} ${s.time}`;
-      if (s.repeat === 'weekly' && s.weekday != null) desc += ` 周${weekdayNames[s.weekday]}`;
-      if (s.repeat === 'monthly' && s.day != null) desc += ` ${s.day}号`;
-      const next = dayjs(s.nextTrigger).format('MM-DD HH:mm');
-      lines.push(`[${s.id}] ${s.text} — ${desc}，下次: ${next}`);
-    }
-  }
-
-  return lines.length > 0 ? lines.join('\n') : '当前没有活跃的提醒或定时任务';
-}
-
-/**
- * 获取调度器状态摘要（用于状态栏显示）
- */
-export function getSchedulerSummary() {
-  const active = reminders.filter(r => r.active);
-  const enabledSchedules = schedules.filter(s => s.enabled);
-  const totalCount = active.length + enabledSchedules.length;
-
-  // 合并所有任务，找下一个最近将要触发的
-  const allItems = [
-    ...active.map(r => ({ text: r.text, time: new Date(r.nextTrigger).getTime() })),
-    ...enabledSchedules.map(s => ({ text: s.text, time: new Date(s.nextTrigger).getTime() })),
-  ].sort((a, b) => a.time - b.time);
-
-  return {
-    activeCount: totalCount,
-    nextTask: allItems.length > 0 ? allItems[0].text : '',
-  };
+    return `[${r.id}] ${r.text} — ${desc}，下次: ${next}`;
+  }).join('\n');
 }
 
 /**
@@ -367,11 +255,9 @@ export function getSchedulerSummary() {
  */
 function sendSystemNotification(reminder) {
   try {
-    const type = reminder.repeat ? `每 ${reminder.intervalMinutes} 分钟` : '一次性';
     notifier.notify({
       title: '🐱 midou 提醒',
       message: reminder.text,
-      subtitle: type,
       sound: true,
       timeout: 10,
     });

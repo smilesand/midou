@@ -22,8 +22,7 @@
  */
 
 import blessed from 'blessed';
-import chalk from 'chalk';
-import { IncrementalMDRenderer, renderMarkdown } from './md-renderer.js';
+import { IncrementalMDRenderer } from './md-renderer.js';
 
 // blessed 内置的 Unicode 宽度计算（CJK 双宽字符支持）
 const unicode = blessed.unicode;
@@ -52,12 +51,6 @@ export function getTodoItems() {
 export function clearTodoItems() {
   _todoItems.length = 0;
   _todoNextId = 1;
-}
-
-export function removeTodoItem(id) {
-  const idx = _todoItems.findIndex(t => t.id === id);
-  if (idx !== -1) { _todoItems.splice(idx, 1); return true; }
-  return false;
 }
 
 // ─── 气泡样式工具 ────────────────────────────────────
@@ -218,8 +211,6 @@ export class BlessedUI {
       model: '',
       heartbeat: 0,
       mcp: 0,
-      tasks: 0,
-      nextTask: '',
       status: '就绪',
     };
   }
@@ -492,14 +483,8 @@ export class BlessedUI {
       s.model,
       `💓 ${s.heartbeat}`,
     ];
-    if (s.tasks > 0) {
-      parts.push(`⏰ ${s.tasks}`);
-    }
     if (s.mcp > 0) {
       parts.push(`🔌 ${s.mcp}`);
-    }
-    if (s.nextTask) {
-      parts.push(s.nextTask.length > 20 ? s.nextTask.slice(0, 20) + '…' : s.nextTask);
     }
     parts.push(s.status);
     this.statusBar.setContent(parts.join(' │ '));

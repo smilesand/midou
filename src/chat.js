@@ -16,7 +16,7 @@ import { chat, chatStreamWithTools } from './llm.js';
 import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory, logConversation } from './memory.js';
-import { getMode, filterToolsByMode, getJournalStrategy } from './mode.js';
+import { filterToolsByMode, getJournalStrategy } from './mode.js';
 
 /**
  * 默认输出处理器 — 直接写入 stdout（保持原有行为）

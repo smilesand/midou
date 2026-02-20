@@ -195,9 +195,3 @@ export function buildSystemPrompt(soulData, recentMemories = '', extensions = {}
   return parts.join('\n\n');
 }
 
-/**
- * 获取工作区根目录
- */
-export function getWorkspacePath() {
-  return WORKSPACE;
-}

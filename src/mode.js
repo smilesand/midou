@@ -40,7 +40,6 @@ const MODES = {
       'read_file', 'write_file', 'list_dir',
       'write_memory', 'write_journal',
       'set_reminder', 'list_reminders', 'cancel_reminder',
-      'add_schedule', 'remove_schedule', 'list_schedules',
       'run_command', 'read_system_file',
     ],
     // 心跳策略

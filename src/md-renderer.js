@@ -12,7 +12,6 @@
 
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
-import chalk from 'chalk';
 
 // 配置 marked 使用终端渲染器
 marked.use(

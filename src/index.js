@@ -15,20 +15,19 @@ import chalk from 'chalk';
 import path from 'path';
 import readline from 'readline';
 import { wakeUp, sleep, completeBootstrap } from './boot.js';
-import { ChatEngine, StdoutOutputHandler } from './chat.js';
+import { ChatEngine } from './chat.js';
 import { startHeartbeat, stopHeartbeat, manualBeat, getHeartbeatStatus } from './heartbeat.js';
-import { startScheduler, stopScheduler, formatReminders, getSchedulerSummary } from './scheduler.js';
+import { startScheduler, stopScheduler, formatReminders } from './scheduler.js';
 import { disconnectAll as disconnectMCP, getMCPStatus } from './mcp.js';
 import { discoverSkills } from './skills.js';
 import { getMode, setMode, listModes, getPromptStrategy } from './mode.js';
-import { logConversation } from './memory.js';
 import { getProvider } from './llm.js';
 import { loadSoul, buildSystemPrompt } from './soul.js';
 import { getRecentMemories } from './memory.js';
 import { buildSkillsPrompt } from './skills.js';
 import { buildMCPPrompt } from './mcp.js';
 import config, { MIDOU_HOME, MIDOU_PKG } from '../midou.config.js';
-import { isInitialized, initSoulDir, migrateFromWorkspace, MIDOU_SOUL_DIR } from './init.js';
+import { isInitialized, initSoulDir, migrateFromWorkspace } from './init.js';
 import { BlessedUI, BlessedOutputHandler } from './ui.js';
 
 // ===== 猫爪 ASCII Art =====
@@ -266,21 +265,7 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
   // 启动定时提醒
   await startScheduler((reminder) => {
     ui.showReminder(reminder);
-    const summary = getSchedulerSummary();
-    ui.updateStatus({
-      tasks: summary.activeCount,
-      nextTask: summary.nextTask ? `⏰ ${summary.nextTask}` : '',
-    });
   });
-
-  // 初始化状态栏中的定时任务数
-  const schedulerSummary = getSchedulerSummary();
-  if (schedulerSummary.activeCount > 0) {
-    ui.updateStatus({
-      tasks: schedulerSummary.activeCount,
-      nextTask: schedulerSummary.nextTask ? `⏰ ${schedulerSummary.nextTask}` : '',
-    });
-  }
 
   // 首次启动觉醒仪式
   if (isFirstBoot) {
@@ -549,8 +534,8 @@ async function startWithReadline(systemPrompt, soulData, isFirstBoot) {
   await startScheduler((reminder) => {
     console.log('');
     console.log(chalk.hex('#FFD700')('  ⏰ ') + chalk.bold(reminder.text));
-    if (reminder.repeat) {
-      console.log(chalk.dim(`     每 ${reminder.intervalMinutes} 分钟 · 第 ${reminder.firedCount} 次`));
+    if (reminder.type === 'interval') {
+      console.log(chalk.dim(`     每 ${reminder.intervalMinutes} 分钟`));
     }
     console.log('');
   });

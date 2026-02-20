@@ -21,7 +21,7 @@ import { initLLM, getProvider } from './llm.js';
 import { buildSkillsPrompt, discoverSkills } from './skills.js';
 import { connectMCPServers, hasMCPConfig, buildMCPPrompt } from './mcp.js';
 import { formatReminders } from './scheduler.js';
-import { initMode, getMode, getPromptStrategy } from './mode.js';
+import { initMode, getPromptStrategy } from './mode.js';
 import config, { MIDOU_HOME } from '../midou.config.js';
 
 /**
