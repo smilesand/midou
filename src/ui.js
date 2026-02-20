@@ -273,7 +273,7 @@ export class BlessedUI {
     this._confirmState = null;
 
     this._statusInfo = {
-      mode: '☀️  标准',
+      mode: '标准',
       model: '',
       heartbeat: 0,
       mcp: 0,
