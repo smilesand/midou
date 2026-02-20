@@ -22,10 +22,34 @@
  */
 
 import blessed from 'blessed';
+import { execSync } from 'child_process';
 import { IncrementalMDRenderer } from './md-renderer.js';
 
 // blessed 内置的 Unicode 宽度计算（CJK 双宽字符支持）
 const unicode = blessed.unicode;
+
+/**
+ * 复制文本到系统剪贴板
+ * 优先使用 OSC 52 转义序列（大多数现代终端支持），回退到系统命令
+ */
+function copyToClipboard(text, screen) {
+  // 方式1: OSC 52 转义序列（xterm/kitty/alacritty/wezterm 等支持）
+  try {
+    const b64 = Buffer.from(text).toString('base64');
+    screen.program.output.write(`\x1b]52;c;${b64}\x07`);
+    return true;
+  } catch (_) { /* fall through */ }
+
+  // 方式2: 系统剪贴板命令
+  const cmds = ['wl-copy', 'xclip -selection clipboard', 'xsel --clipboard --input', 'pbcopy'];
+  for (const cmd of cmds) {
+    try {
+      execSync(cmd, { input: text, stdio: ['pipe', 'ignore', 'ignore'] });
+      return true;
+    } catch (_) { /* 继续尝试 */ }
+  }
+  return false;
+}
 
 // ─── TODO 数据管理 ──────────────────────────────────
 
@@ -89,6 +113,7 @@ export class BlessedOutputHandler {
     this._streamRenderer = null;
     this._thinkingLines = [];
     this._aiLines = [];
+    this._rawText = '';
     this._spinnerTimer = null;
     this._spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     this._spinnerIdx = 0;
@@ -149,12 +174,14 @@ export class BlessedOutputHandler {
   onTextDelta(text) {
     if (!this._streamRenderer) {
       this._aiLines = [];
+      this._rawText = '';
       this._startSpinner('生成中');
       this._streamRenderer = new IncrementalMDRenderer((rendered) => {
         this._aiLines.push(blessed.escape(rendered));
         this.ui.appendChat(blessed.escape(rendered));
       });
     }
+    this._rawText += text;
     this._streamRenderer.feed(text);
   }
 
@@ -163,6 +190,11 @@ export class BlessedOutputHandler {
     if (this._streamRenderer) {
       this._streamRenderer.flush();
       this._streamRenderer = null;
+    }
+    // 保存最近一次 AI 回复原文，供 /copy 使用
+    if (this._rawText) {
+      this.ui._lastAIResponse = this._rawText;
+      this._rawText = '';
     }
     if (truncated) {
       this.ui.appendChat('{yellow-fg}⚠ 输出因 token 限制被截断，可用 /mode full 获取更长回复{/yellow-fg}');
@@ -231,6 +263,7 @@ export class BlessedUI {
     this._onQuit = null;
     this._processing = false;
     this._todoPanelVisible = false;
+    this._lastAIResponse = '';
 
     // 输入状态
     this._inputValue = '';
@@ -273,7 +306,7 @@ export class BlessedUI {
       top: 1,
       left: 0,
       width: '100%',
-      height: '100%-4',
+      height: '100%-8',
       tags: true,
       scrollable: true,
       alwaysScroll: true,
@@ -291,7 +324,7 @@ export class BlessedUI {
       top: 1,
       right: 0,
       width: 30,
-      height: '100%-4',
+      height: '100%-8',
       tags: true,
       scrollable: true,
       alwaysScroll: true,
@@ -314,7 +347,7 @@ export class BlessedUI {
       bottom: 0,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 7,
       border: { type: 'line' },
       style: { border: { fg: '#FFB347' } },
     });
@@ -325,12 +358,13 @@ export class BlessedUI {
       top: 0,
       left: 1,
       width: '100%-4',
-      height: 1,
+      height: 5,
       tags: true,
       style: { fg: 'white', bg: 'default' },
     });
 
-    // 让 inputBox 可被 focus
+    // 让 inputBox 可被 focus，并初始化为空内容
+    this.inputBox.setContent('');
     this.inputBox.focus();
 
     // blessed 在 screen.render() 末尾调用 this.focused._updateCursor(true)，
@@ -420,10 +454,14 @@ export class BlessedUI {
       return;
     }
     if (key.name === 'home') {
-      this._inputCursor = 0; this._renderInput(); return;
+      this._inputCursor = 0;
+      this._renderInput();
+      return;
     }
     if (key.name === 'end') {
-      this._inputCursor = this._inputValue.length; this._renderInput(); return;
+      this._inputCursor = this._inputValue.length;
+      this._renderInput();
+      return;
     }
 
     if (key.name === 'backspace') {
@@ -461,24 +499,36 @@ export class BlessedUI {
 
   _positionCursor() {
     try {
+      if (this._processing) return;
+
       const textBeforeCursor = this._inputValue.slice(0, this._inputCursor);
       const displayWidth = unicode.strWidth(textBeforeCursor);
 
-      let cx, cy;
       const lpos = this.inputBox.lpos;
+      let baseX, baseY, boxWidth;
       if (lpos) {
-        cx = lpos.xi + this.inputBox.ileft + displayWidth;
-        cy = lpos.yi + this.inputBox.itop;
+        baseX = lpos.xi + this.inputBox.ileft;
+        baseY = lpos.yi + this.inputBox.itop;
+        boxWidth = (lpos.xhi - lpos.xi) - this.inputBox.iwidth;
       } else {
-        // lpos 未就绪时使用手动计算（inputBorder: bottom=0, height=3, border=1; inputBox: left=1）
-        cx = 2 + displayWidth;
-        cy = this.screen.rows - 2;
+        baseX = 2;
+        baseY = this.screen.rows - 6;
+        boxWidth = this.screen.cols - 6;
       }
 
-      this.screen.program.cup(cy, cx);
-      if (this.screen.program.cursorHidden) {
-        this.screen.program.showCursor();
-      }
+      // 处理自动换行：计算光标所在的视觉行和列
+      const row = boxWidth > 0 ? Math.floor(displayWidth / boxWidth) : 0;
+      const col = boxWidth > 0 ? displayWidth % boxWidth : displayWidth;
+
+      const cy = baseY + row;
+      const cx = baseX + col;
+
+      setImmediate(() => {
+        this.screen.program.cup(cy, cx);
+        if (this.screen.program.cursorHidden) {
+          this.screen.program.showCursor();
+        }
+      });
     } catch (_) { /* 忽略布局过渡异常 */ }
   }
 
@@ -668,6 +718,24 @@ export class BlessedUI {
   showSystemMessage(text) {
     const bubble = makeBubble(blessed.escape(text), 'system');
     for (const line of bubble) this.appendChat(line);
+  }
+
+  /**
+   * 复制最近一次 AI 回复到剪贴板
+   * @returns {boolean} 是否成功
+   */
+  copyLastResponse() {
+    if (!this._lastAIResponse) {
+      this.showSystemMessage('没有可复制的内容');
+      return false;
+    }
+    const ok = copyToClipboard(this._lastAIResponse, this.screen);
+    if (ok) {
+      this.showSystemMessage('✓ 已复制最近一次回复到剪贴板');
+    } else {
+      this.showSystemMessage('复制失败，请安装 wl-copy 或 xclip');
+    }
+    return ok;
   }
 
   showReminder(reminder) {

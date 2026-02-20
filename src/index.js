@@ -443,6 +443,10 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
         return;
       }
 
+      case '/copy':
+        ui.copyLastResponse();
+        return;
+
       default:
         ui.appendChat(`未知命令: ${input}，输入 /help 查看帮助`);
         return;
@@ -462,6 +466,7 @@ function showHelpUI(ui) {
   ui.appendChat('对话');
   ui.appendChat('  /help          显示帮助信息');
   ui.appendChat('  /think         查看上一次的思考过程');
+  ui.appendChat('  /copy          复制最近一次 AI 回复到剪贴板');
   ui.appendChat('');
   ui.appendChat('灵魂');
   ui.appendChat('  /soul          查看当前灵魂');
@@ -481,6 +486,7 @@ function showHelpUI(ui) {
   ui.appendChat('');
   ui.appendChat('/quit /exit /bye 退出对话 · Ctrl+C 强制退出');
   ui.appendChat('直接输入文字即可与 midou 对话');
+  ui.appendChat('{#888888-fg}💡 按住 Shift + 鼠标拖选可直接复制对话框文本{/#888888-fg}');
   ui.appendChat('');
 }
 
