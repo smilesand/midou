@@ -360,6 +360,8 @@ export class BlessedUI {
       width: '100%-4',
       height: 5,
       tags: true,
+      scrollable: true,
+      alwaysScroll: true,
       style: { fg: 'white', bg: 'default' },
     });
 
@@ -505,30 +507,47 @@ export class BlessedUI {
       const displayWidth = unicode.strWidth(textBeforeCursor);
 
       const lpos = this.inputBox.lpos;
-      let baseX, baseY, boxWidth;
+      let baseX, baseY, boxWidth, boxHeight;
       if (lpos) {
         baseX = lpos.xi + this.inputBox.ileft;
         baseY = lpos.yi + this.inputBox.itop;
-        boxWidth = (lpos.xhi - lpos.xi) - this.inputBox.iwidth;
+        boxWidth = (lpos.xl - lpos.xi) - this.inputBox.iwidth;
+        boxHeight = (lpos.yl - lpos.yi) - this.inputBox.iheight;
       } else {
         baseX = 2;
         baseY = this.screen.rows - 6;
         boxWidth = this.screen.cols - 6;
+        boxHeight = 5;
       }
 
       // 处理自动换行：计算光标所在的视觉行和列
       const row = boxWidth > 0 ? Math.floor(displayWidth / boxWidth) : 0;
       const col = boxWidth > 0 ? displayWidth % boxWidth : displayWidth;
 
-      const cy = baseY + row;
+      // 自动滚动
+      let scrollOffset = this.inputBox.childBase || 0;
+      if (row < scrollOffset) {
+        this.inputBox.scrollTo(row);
+        scrollOffset = this.inputBox.childBase || 0;
+        this.screen.render();
+      } else if (row >= scrollOffset + boxHeight) {
+        this.inputBox.scrollTo(row - boxHeight + 1);
+        scrollOffset = this.inputBox.childBase || 0;
+        this.screen.render();
+      }
+
+      const cy = baseY + row - scrollOffset;
       const cx = baseX + col;
 
-      setImmediate(() => {
-        this.screen.program.cup(cy, cx);
-        if (this.screen.program.cursorHidden) {
-          this.screen.program.showCursor();
-        }
-      });
+      // 确保光标在屏幕范围内
+      if (cy >= baseY && cy < baseY + boxHeight) {
+        setImmediate(() => {
+          this.screen.program.cup(cy, cx);
+          if (this.screen.program.cursorHidden) {
+            this.screen.program.showCursor();
+          }
+        });
+      }
     } catch (_) { /* 忽略布局过渡异常 */ }
   }
 
