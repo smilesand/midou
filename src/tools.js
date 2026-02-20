@@ -19,6 +19,7 @@ import { addLongTermMemory, writeJournal } from './memory.js';
 import { addReminder, removeReminder, toggleReminder, listReminders, formatReminders } from './scheduler.js';
 import { loadSkillContent, listSkillNames } from './skills.js';
 import { isMCPTool, executeMCPTool } from './mcp.js';
+import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems, removeTodoItem } from './ui.js';
 
 /**
  * 工具定义（OpenAI Function Calling 格式）
@@ -354,6 +355,75 @@ export const toolDefinitions = [
       },
     },
   },
+
+  // ── TODO 工作流 ──────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_todo',
+      description: '创建一个工作任务。当你需要完成复杂工作时，先建立工作计划，再逐步执行。任务会显示在 UI 的工作计划面板中。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: '任务标题，简短描述',
+          },
+          description: {
+            type: 'string',
+            description: '任务的详细描述（可选）',
+          },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_todo',
+      description: '更新任务状态。状态值：pending(待办)、in_progress(进行中)、done(完成)、blocked(阻塞)',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'number',
+            description: '任务 ID',
+          },
+          status: {
+            type: 'string',
+            description: '新状态：pending, in_progress, done, blocked',
+            enum: ['pending', 'in_progress', 'done', 'blocked'],
+          },
+        },
+        required: ['id', 'status'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_todos',
+      description: '列出当前所有工作任务及其状态',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'clear_todos',
+      description: '清空所有工作任务（工作完成后使用）',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
 ];
 
 // ── 危险命令黑名单 ──────────────────────────────────
@@ -553,6 +623,31 @@ export async function executeTool(name, args) {
       } catch (err) {
         return `无法列出目录 ${args.path}: ${err.message}`;
       }
+    }
+
+    // ── TODO 工作流 ──
+    case 'create_todo': {
+      const item = addTodoItem(args.title, args.description || '');
+      return `已创建任务 [${item.id}]: ${item.title}`;
+    }
+
+    case 'update_todo': {
+      const item = updateTodoStatus(args.id, args.status);
+      if (!item) return `未找到任务 [${args.id}]`;
+      const statusMap = { pending: '待办', in_progress: '进行中', done: '✓ 完成', blocked: '阻塞' };
+      return `任务 [${item.id}] "${item.title}" → ${statusMap[item.status] || item.status}`;
+    }
+
+    case 'list_todos': {
+      const items = getTodoItems();
+      if (items.length === 0) return '当前没有工作任务';
+      const statusIcon = { pending: '□', in_progress: '►', done: '✓', blocked: '✗' };
+      return items.map(i => `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}`).join('\n');
+    }
+
+    case 'clear_todos': {
+      clearTodoItems();
+      return '已清空所有工作任务';
     }
 
     default:

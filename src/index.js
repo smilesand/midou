@@ -17,7 +17,7 @@ import readline from 'readline';
 import { wakeUp, sleep, completeBootstrap } from './boot.js';
 import { ChatEngine, StdoutOutputHandler } from './chat.js';
 import { startHeartbeat, stopHeartbeat, manualBeat, getHeartbeatStatus } from './heartbeat.js';
-import { startScheduler, stopScheduler, formatReminders } from './scheduler.js';
+import { startScheduler, stopScheduler, formatReminders, getSchedulerSummary } from './scheduler.js';
 import { disconnectAll as disconnectMCP, getMCPStatus } from './mcp.js';
 import { discoverSkills } from './skills.js';
 import { getMode, setMode, listModes, getPromptStrategy } from './mode.js';
@@ -266,7 +266,21 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
   // 启动定时提醒
   await startScheduler((reminder) => {
     ui.showReminder(reminder);
+    const summary = getSchedulerSummary();
+    ui.updateStatus({
+      tasks: summary.activeCount,
+      lastTask: `⏰ ${reminder.text}`,
+    });
   });
+
+  // 初始化状态栏中的定时任务数
+  const schedulerSummary = getSchedulerSummary();
+  if (schedulerSummary.activeCount > 0) {
+    ui.updateStatus({
+      tasks: schedulerSummary.activeCount,
+      lastTask: schedulerSummary.lastTask ? `⏰ ${schedulerSummary.lastTask}` : '',
+    });
+  }
 
   // 首次启动觉醒仪式
   if (isFirstBoot) {

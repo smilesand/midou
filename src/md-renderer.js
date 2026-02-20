@@ -24,13 +24,41 @@ marked.use(
   })
 );
 
+// 自定义链接渲染：显示链接文本和 URL
+marked.use({
+  renderer: {
+    link({ href, tokens }) {
+      const linkText = tokens ? this.parser.parseInline(tokens) : href;
+      if (linkText === href) {
+        return `\x1b[4m\x1b[36m${href}\x1b[0m`;
+      }
+      return `\x1b[36m${linkText}\x1b[0m (\x1b[4m\x1b[90m${href}\x1b[0m)`;
+    },
+  },
+});
+
+/**
+ * 后处理：修复 marked-terminal 未渲染的 markdown 链接语法
+ * 需要避免匹配 ANSI 转义序列中的 [ 字符
+ */
+function postProcessLinks(text) {
+  // 负向后瞻确保 [ 前不是 ESC 字符（ANSI 序列的一部分）
+  return text.replace(/(?<!\x1b)\[([^\]\x1b]+)\]\((https?:\/\/[^)]+)\)/g, (_, linkText, href) => {
+    if (linkText === href) {
+      return `\x1b[4m\x1b[36m${href}\x1b[0m`;
+    }
+    return `\x1b[36m${linkText}\x1b[0m (\x1b[4m\x1b[90m${href}\x1b[0m)`;
+  });
+}
+
 /**
  * 渲染 markdown 文本为终端格式
  */
 export function renderMarkdown(text) {
   if (!text || !text.trim()) return '';
   try {
-    return marked.parse(text).replace(/\n+$/, '');
+    const rendered = marked.parse(text).replace(/\n+$/, '');
+    return postProcessLinks(rendered);
   } catch {
     return text;
   }

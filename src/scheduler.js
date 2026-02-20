@@ -195,6 +195,20 @@ export function formatReminders() {
 }
 
 /**
+ * 获取调度器状态摘要（用于状态栏显示）
+ */
+export function getSchedulerSummary() {
+  const active = reminders.filter(r => r.active);
+  const lastFired = reminders
+    .filter(r => r.firedCount > 0)
+    .sort((a, b) => b.firedCount - a.firedCount)[0];
+  return {
+    activeCount: active.length,
+    lastTask: lastFired ? lastFired.text : '',
+  };
+}
+
+/**
  * 发送系统桌面通知
  */
 function sendSystemNotification(reminder) {
