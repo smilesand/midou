@@ -15,7 +15,7 @@ import chalk from 'chalk';
 import path from 'path';
 import readline from 'readline';
 import { wakeUp, sleep, completeBootstrap } from './boot.js';
-import { ChatEngine } from './chat.js';
+import { ChatEngine, StdoutOutputHandler } from './chat.js';
 import { startHeartbeat, stopHeartbeat, manualBeat, getHeartbeatStatus } from './heartbeat.js';
 import { startScheduler, stopScheduler, formatReminders } from './scheduler.js';
 import { disconnectAll as disconnectMCP, getMCPStatus } from './mcp.js';
@@ -29,6 +29,7 @@ import { buildSkillsPrompt } from './skills.js';
 import { buildMCPPrompt } from './mcp.js';
 import config, { MIDOU_HOME, MIDOU_PKG } from '../midou.config.js';
 import { isInitialized, initSoulDir, migrateFromWorkspace, MIDOU_SOUL_DIR } from './init.js';
+import { BlessedUI, BlessedOutputHandler } from './ui.js';
 
 // ===== 猫爪 ASCII Art =====
 const LOGO = [
@@ -208,6 +209,320 @@ async function main() {
   // 醒来仪式
   const { systemPrompt, soulData, isFirstBoot } = await wakeUp();
 
+  // 检查是否使用 --no-ui 参数来禁用 blessed UI
+  const useUI = !process.argv.includes('--no-ui');
+
+  if (useUI) {
+    await startWithUI(systemPrompt, soulData, isFirstBoot);
+  } else {
+    await startWithReadline(systemPrompt, soulData, isFirstBoot);
+  }
+}
+
+/**
+ * 使用 Blessed UI 启动交互式对话
+ */
+async function startWithUI(systemPrompt, soulData, isFirstBoot) {
+  const ui = new BlessedUI();
+  ui.init();
+
+  // 创建 UI 输出处理器
+  const outputHandler = new BlessedOutputHandler(ui);
+
+  // 创建对话引擎
+  const engine = new ChatEngine(systemPrompt, outputHandler);
+
+  // 更新状态栏
+  const prov = getProvider() === 'anthropic' ? 'Anthropic' : 'OpenAI';
+  const mode = getMode();
+  const mcpStatus = getMCPStatus();
+  ui.updateStatus({
+    mode: mode.label,
+    model: `${config.llm.model} (${prov})`,
+    heartbeat: 0,
+    mcp: mcpStatus.filter(s => s.connected).length,
+    status: '就绪',
+  });
+
+  // 显示欢迎信息
+  ui.appendChat('{#FFB347-fg}    /\\_/\\{/#FFB347-fg}');
+  ui.appendChat('{#FFB347-fg}   ( o.o ){/#FFB347-fg}');
+  ui.appendChat('{#FFB347-fg}    > ^ <    midou{/#FFB347-fg}');
+  ui.appendChat('{#FFB347-fg}   /|   |\\   你的 AI 伙伴{/#FFB347-fg}');
+  ui.appendChat('{#FFB347-fg}  (_|   |_){/#FFB347-fg}');
+  ui.appendChat('');
+  ui.appendChat(`模型: ${config.llm.model} via ${prov} │ 模式: ${mode.label} │ 之家: ${MIDOU_HOME}`);
+  ui.appendChat('输入 /help 查看命令 · 直接输入文字开始对话');
+  ui.appendChat('');
+
+  // 启动心跳
+  let hbCount = 0;
+  startHeartbeat((msg) => {
+    hbCount++;
+    ui.showHeartbeat(msg);
+    ui.updateStatus({ heartbeat: hbCount });
+  });
+
+  // 启动定时提醒
+  await startScheduler((reminder) => {
+    ui.showReminder(reminder);
+  });
+
+  // 首次启动觉醒仪式
+  if (isFirstBoot) {
+    ui.appendChat('{#FFD700-fg}✨ midou 正在进行觉醒仪式…{/#FFD700-fg}');
+    ui.appendChat('');
+    ui.appendChat('{#FFB347-fg}🐱 › {/#FFB347-fg}');
+    await engine.talk('你好，我是你的创造者。你刚刚醒来，请按照觉醒指引介绍你自己吧。');
+    ui.appendChat('');
+    await completeBootstrap();
+  }
+
+  // 优雅退出
+  const gracefulExit = async () => {
+    stopHeartbeat();
+    stopScheduler();
+    disconnectMCP();
+    ui.destroy();
+    await sleep();
+    process.exit(0);
+  };
+
+  // 设置输入回调
+  ui.onSubmit(async (input) => {
+    ui.updateStatus({ status: '思考中…' });
+    try {
+      await engine.talk(input);
+    } catch (error) {
+      ui.appendChat(`{red-fg}⚠  出了点问题: ${error.message}{/red-fg}`);
+    }
+    ui.updateStatus({ status: '就绪' });
+  });
+
+  // 设置命令回调
+  ui.onCommand(async (input) => {
+    const lowerInput = input.toLowerCase();
+    const cmdParts = lowerInput.split(/\s+/);
+    const cmd = cmdParts[0];
+    const cmdArg = cmdParts[1] || '';
+
+    switch (cmd) {
+      case '/quit':
+      case '/exit':
+      case '/bye':
+        await gracefulExit();
+        return;
+
+      case '/heartbeat':
+        ui.showSystemMessage('💓 手动心跳中…');
+        await manualBeat((msg) => {
+          hbCount++;
+          ui.showHeartbeat(msg);
+          ui.updateStatus({ heartbeat: hbCount });
+        });
+        ui.showSystemMessage('💓 完成');
+        return;
+
+      case '/status':
+        showStatusUI(ui);
+        return;
+
+      case '/help':
+        showHelpUI(ui);
+        return;
+
+      case '/soul':
+        if (soulData.soul) {
+          ui.appendChat('');
+          ui.appendChat(soulData.soul);
+          ui.appendChat('');
+        }
+        return;
+
+      case '/memory': {
+        const { getLongTermMemory } = await import('./memory.js');
+        const mem = await getLongTermMemory();
+        ui.appendChat('');
+        ui.appendChat(mem || '（还没有长期记忆）');
+        ui.appendChat('');
+        return;
+      }
+
+      case '/evolve':
+        ui.showSystemMessage('🧬 midou 正在自我反思…');
+        ui.appendChat('{#FFB347-fg}🐱 › {/#FFB347-fg}');
+        await engine.talk('请进行一次深度自我反思。回顾我们的对话和你的记忆，思考你想要如何进化。如果你决定修改自己的灵魂，请使用 evolve_soul 工具。');
+        return;
+
+      case '/where':
+        ui.appendChat('');
+        ui.appendChat(`之家  ${MIDOU_HOME}`);
+        ui.appendChat(`代码  ${MIDOU_PKG}`);
+        ui.appendChat('');
+        return;
+
+      case '/reminders':
+        ui.appendChat('');
+        ui.appendChat('{#FFD700-fg}⏰ 活跃提醒{/#FFD700-fg}');
+        ui.appendChat(formatReminders());
+        ui.appendChat('');
+        return;
+
+      case '/skills': {
+        const skillsList = await discoverSkills();
+        ui.appendChat('');
+        ui.appendChat('{#FFD700-fg}🧩 可用技能{/#FFD700-fg}');
+        if (skillsList.length === 0) {
+          ui.appendChat('没有发现技能');
+        } else {
+          for (const s of skillsList) {
+            ui.appendChat(`${s.name} (${s.source}): ${s.description.slice(0, 80)}…`);
+          }
+        }
+        ui.appendChat('');
+        return;
+      }
+
+      case '/mcp': {
+        const mcpSt = getMCPStatus();
+        ui.appendChat('');
+        ui.appendChat('{#FFD700-fg}🔌 MCP 扩展{/#FFD700-fg}');
+        if (mcpSt.length === 0) {
+          ui.appendChat('未配置 MCP 服务器');
+        } else {
+          for (const s of mcpSt) {
+            const state = s.connected ? '●' : '○';
+            ui.appendChat(`${state} ${s.name} — ${s.toolCount} 工具`);
+          }
+        }
+        ui.appendChat('');
+        return;
+      }
+
+      case '/mode': {
+        if (cmdArg && ['eco', 'normal', 'full'].includes(cmdArg)) {
+          setMode(cmdArg);
+          const newMode = getMode();
+          ui.showSystemMessage(`✅ 已切换到 ${newMode.label}`);
+          ui.updateStatus({ mode: newMode.label });
+
+          // 重建系统提示词
+          const strategy = getPromptStrategy();
+          const sd2 = await loadSoul();
+          const j2 = await getRecentMemories(strategy.journalDays || 2);
+          const sp = strategy.includeSkills ? await buildSkillsPrompt() : '';
+          const mp = strategy.includeMCP ? buildMCPPrompt() : '';
+          const newPrompt = buildSystemPrompt(sd2, j2, { skills: sp, mcp: mp }, strategy);
+          engine.updateSystemPrompt(newPrompt);
+          ui.showSystemMessage(`系统提示词已按 ${cmdArg} 模式重建`);
+        } else {
+          const modes = listModes();
+          const current = getMode();
+          ui.appendChat('');
+          ui.appendChat('{#FFD700-fg}⚡ 功耗模式{/#FFD700-fg}');
+          for (const m of modes) {
+            const active = m.name === current.name ? ' ◄' : '';
+            ui.appendChat(`${m.label}${active}  ${m.maxTokens} tokens · temp ${m.temperature}`);
+          }
+          ui.appendChat('用法: /mode eco | /mode normal | /mode full');
+          ui.appendChat('');
+        }
+        return;
+      }
+
+      case '/think': {
+        const thinking = engine.lastThinking;
+        ui.appendChat('');
+        if (thinking) {
+          ui.appendChat('{#C9B1FF-fg}💭 上一次的思考过程{/#C9B1FF-fg}');
+          const lines = thinking.split('\n');
+          for (const line of lines) {
+            ui.appendChat(`{#C9B1FF-fg}│ ${line}{/#C9B1FF-fg}`);
+          }
+          ui.appendChat(`{#C9B1FF-fg}└─ ${thinking.length} 字{/#C9B1FF-fg}`);
+        } else {
+          ui.appendChat('没有思考记录');
+        }
+        ui.appendChat('');
+        return;
+      }
+
+      default:
+        ui.appendChat(`未知命令: ${input}，输入 /help 查看帮助`);
+        return;
+    }
+  });
+
+  ui.onQuit(gracefulExit);
+}
+
+/**
+ * 在 UI 中显示帮助信息
+ */
+function showHelpUI(ui) {
+  ui.appendChat('');
+  ui.appendChat('{#FFB347-fg}🐱 midou 命令{/#FFB347-fg}');
+  ui.appendChat('');
+  ui.appendChat('对话');
+  ui.appendChat('  /help          显示帮助信息');
+  ui.appendChat('  /think         查看上一次的思考过程');
+  ui.appendChat('');
+  ui.appendChat('灵魂');
+  ui.appendChat('  /soul          查看当前灵魂');
+  ui.appendChat('  /evolve        让 midou 自我反思并进化');
+  ui.appendChat('  /memory        查看长期记忆');
+  ui.appendChat('');
+  ui.appendChat('系统');
+  ui.appendChat('  /status        查看 midou 的状态');
+  ui.appendChat('  /mode          切换功耗模式');
+  ui.appendChat('  /heartbeat     手动触发一次心跳');
+  ui.appendChat('  /where         显示灵魂之家的位置');
+  ui.appendChat('');
+  ui.appendChat('扩展');
+  ui.appendChat('  /skills        查看可用技能');
+  ui.appendChat('  /mcp           查看 MCP 连接状态');
+  ui.appendChat('  /reminders     查看活跃的提醒');
+  ui.appendChat('');
+  ui.appendChat('/quit /exit /bye 退出对话 · Ctrl+C 强制退出');
+  ui.appendChat('直接输入文字即可与 midou 对话');
+  ui.appendChat('');
+}
+
+/**
+ * 在 UI 中显示状态信息
+ */
+function showStatusUI(ui) {
+  const hb = getHeartbeatStatus();
+  const prov = getProvider() === 'anthropic' ? 'Anthropic SDK' : 'OpenAI SDK';
+  const mcpStatus = getMCPStatus();
+  const mode = getMode();
+
+  ui.appendChat('');
+  ui.appendChat('{#FFB347-fg}🐱 midou 状态{/#FFB347-fg}');
+  ui.appendChat(`  大脑     ${config.llm.model} via ${prov}`);
+  ui.appendChat(`  模式     ${mode.label}`);
+  ui.appendChat(`  心跳     ${hb.running ? '● 运行中' : '○ 已停止'} (${hb.count} 次 · 每 ${hb.interval} 分钟)`);
+  ui.appendChat(`  活跃     ${hb.activeHours.start}:00–${hb.activeHours.end}:00 ${hb.isActiveNow ? '●' : '○'}`);
+
+  const reminderText = formatReminders();
+  ui.appendChat(`  提醒     ${reminderText === '当前没有活跃的提醒' ? '无' : '● 活跃'}`);
+
+  if (mcpStatus.length > 0) {
+    const connected = mcpStatus.filter(s => s.connected).length;
+    ui.appendChat(`  MCP      ${connected}/${mcpStatus.length} 已连接`);
+  } else {
+    ui.appendChat('  MCP      未配置');
+  }
+
+  ui.appendChat(`  之家     ${MIDOU_HOME}`);
+  ui.appendChat(`  代码     ${MIDOU_PKG}`);
+  ui.appendChat('');
+}
+
+/**
+ * 使用传统 readline 启动交互式对话（fallback）
+ */
+async function startWithReadline(systemPrompt, soulData, isFirstBoot) {
   // 创建对话引擎
   const engine = new ChatEngine(systemPrompt);
 

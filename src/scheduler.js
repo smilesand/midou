@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import chalk from 'chalk';
 import dayjs from 'dayjs';
+import notifier from 'node-notifier';
 import config from '../midou.config.js';
 
 const REMINDERS_FILE = path.join(config.workspace.root, 'reminders.json');
@@ -123,6 +124,9 @@ async function checkReminders(onFire) {
         onFire(reminder);
       }
 
+      // 系统通知
+      sendSystemNotification(reminder);
+
       if (reminder.repeat) {
         // 重复提醒：设置下一次触发时间
         reminder.nextTrigger = new Date(now + reminder.intervalMinutes * 60 * 1000).toISOString();
@@ -188,4 +192,22 @@ export function formatReminders() {
     const type = r.repeat ? `每 ${r.intervalMinutes} 分钟` : '一次性';
     return `[${r.id}] ${r.text} — ${type}，下次: ${next}`;
   }).join('\n');
+}
+
+/**
+ * 发送系统桌面通知
+ */
+function sendSystemNotification(reminder) {
+  try {
+    const type = reminder.repeat ? `每 ${reminder.intervalMinutes} 分钟` : '一次性';
+    notifier.notify({
+      title: '🐱 midou 提醒',
+      message: reminder.text,
+      subtitle: type,
+      sound: true,
+      timeout: 10,
+    });
+  } catch {
+    // 系统通知失败不影响主流程
+  }
 }

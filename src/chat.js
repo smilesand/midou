@@ -6,8 +6,9 @@
  * - 工具调用（自我进化、记忆管理、系统命令等）
  * - MCP 扩展工具
  * - 功耗模式感知
- * - 智能会话记忆管理
+ * - 智能会话记忆管理（带上下文摘要）
  * - 多轮对话
+ * - 可插拔的输出处理器（支持 stdout / blessed UI）
  */
 
 import chalk from 'chalk';
@@ -18,15 +19,106 @@ import { SessionMemory, logConversation } from './memory.js';
 import { getMode, filterToolsByMode, getJournalStrategy } from './mode.js';
 
 /**
+ * 默认输出处理器 — 直接写入 stdout（保持原有行为）
+ */
+export class StdoutOutputHandler {
+  onThinkingStart() {
+    const w = Math.min(process.stdout.columns || 50, 50);
+    process.stdout.write('\n' + chalk.hex('#C9B1FF')('  ┌─ 💭 ') + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 10))) + '\n');
+    process.stdout.write(chalk.hex('#C9B1FF').dim('  │ '));
+  }
+
+  onThinkingDelta(text) {
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        process.stdout.write(chalk.hex('#C9B1FF').dim('\n  │ '));
+      }
+      process.stdout.write(chalk.hex('#C9B1FF').dim(lines[i]));
+    }
+  }
+
+  onThinkingEnd(fullText) {
+    if (fullText) {
+      const w = Math.min(process.stdout.columns || 50, 50);
+      process.stdout.write(chalk.hex('#C9B1FF').dim(`\n  └─ ${fullText.length} 字 `) + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 8 - String(fullText.length).length))) + '\n\n');
+    }
+  }
+
+  onThinkingHidden(length) {
+    process.stdout.write(chalk.hex('#C9B1FF').dim(`  💭 ${length} 字 — /think 查看\n`));
+  }
+
+  onTextDelta(text) {
+    process.stdout.write(chalk.hex('#FFB347')(text));
+  }
+
+  onTextComplete() {
+    process.stdout.write('\n');
+  }
+
+  onToolStart(name) {
+    const isMCP = name.startsWith('mcp_');
+    const icon = isMCP ? '🔌' : '⚙';
+    process.stdout.write(chalk.hex('#7FDBFF').dim(`\n  ${icon}  ${name} `));
+  }
+
+  onToolEnd(name, input) {
+    process.stdout.write(chalk.hex('#7FDBFF').dim(`${JSON.stringify(input).slice(0, 50)}\n`));
+  }
+
+  onToolExec(name) {
+    process.stdout.write(chalk.hex('#7FDBFF').dim(`  ↳ ${name} `));
+  }
+
+  onToolResult() {
+    process.stdout.write(chalk.green.dim('✓') + '\n');
+  }
+
+  onError(message) {
+    console.error(chalk.yellow(`  ⚠  ${message}`));
+  }
+
+  async confirmCommand(command) {
+    // readline 模式也需要用户确认命令
+    const readline = await import('readline');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    return new Promise((resolve) => {
+      console.log('');
+      console.log(chalk.yellow.bold('  ⚠ 命令确认'));
+      console.log(chalk.dim('  即将执行以下命令:'));
+      console.log(chalk.cyan(`  $ ${command}`));
+      rl.question(chalk.dim('  确认执行? [y/N] '), (answer) => {
+        rl.close();
+        const confirmed = answer.trim().toLowerCase() === 'y';
+        if (!confirmed) {
+          console.log(chalk.dim('  已拒绝'));
+        }
+        resolve(confirmed);
+      });
+    });
+  }
+}
+
+/**
  * 对话引擎
  */
 export class ChatEngine {
-  constructor(systemPrompt) {
-    this.session = new SessionMemory(50);
+  /**
+   * @param {string} systemPrompt - 系统提示词
+   * @param {object} outputHandler - 输出处理器（默认 stdout）
+   */
+  constructor(systemPrompt, outputHandler = null) {
+    this.session = new SessionMemory(100);
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
-    this.showThinking = true;   // 是否实时显示思考过程
-    this.lastThinking = '';     // 上一次思考内容（/think 查看）
+    this.showThinking = true;
+    this.lastThinking = '';
+    this.output = outputHandler || new StdoutOutputHandler();
   }
 
   /**
@@ -59,9 +151,6 @@ export class ChatEngine {
 
   /**
    * 带工具的流式思考过程
-   *
-   * 全流式架构：不再用非流式 chatWithTools。
-   * 所有响应（思考、文本、工具调用）都实时流式展示。
    */
   async _thinkWithTools() {
     const messages = this.session.getMessages();
@@ -75,89 +164,90 @@ export class ChatEngine {
       let completeMessage = null;
       let iterationText = '';
       let thinkingText = '';
-      let thinkingLineCount = 0;
 
       try {
         for await (const event of chatStreamWithTools(messages, tools)) {
           switch (event.type) {
-            // ── 思考块（支持 thinking 的模型）──
             case 'thinking_start':
               if (this.showThinking) {
-                const w = Math.min(process.stdout.columns || 50, 50);
-                process.stdout.write('\n' + chalk.hex('#C9B1FF')('  ┌─ 💭 ') + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 10))) + '\n');
-                process.stdout.write(chalk.hex('#C9B1FF').dim('  │ '));
+                this.output.onThinkingStart();
               }
               break;
 
             case 'thinking_delta':
               thinkingText += event.text;
               if (this.showThinking) {
-                const lines = event.text.split('\n');
-                for (let i = 0; i < lines.length; i++) {
-                  if (i > 0) {
-                    process.stdout.write(chalk.hex('#C9B1FF').dim('\n  │ '));
-                    thinkingLineCount++;
-                  }
-                  process.stdout.write(chalk.hex('#C9B1FF').dim(lines[i]));
-                }
+                this.output.onThinkingDelta(event.text);
               }
               break;
 
             case 'thinking_end':
               this.lastThinking = event.fullText || thinkingText;
               if (this.showThinking && thinkingText) {
-                const w = Math.min(process.stdout.columns || 50, 50);
-                process.stdout.write(chalk.hex('#C9B1FF').dim(`\n  └─ ${thinkingText.length} 字 `) + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 8 - String(thinkingText.length).length))) + '\n\n');
+                this.output.onThinkingEnd(thinkingText);
               } else if (thinkingText) {
-                process.stdout.write(chalk.hex('#C9B1FF').dim(`  💭 ${thinkingText.length} 字 — /think 查看\n`));
+                this.output.onThinkingHidden(thinkingText.length);
               }
               break;
 
-            // ── 正文流式输出 ──
             case 'text_delta':
               iterationText += event.text;
-              process.stdout.write(chalk.hex('#FFB347')(event.text));
+              this.output.onTextDelta(event.text);
               break;
 
-            // ── 工具调用 ──
-            case 'tool_start': {
-              const isMCP = event.name.startsWith('mcp_');
-              const icon = isMCP ? '🔌' : '⚙';
-              process.stdout.write(chalk.hex('#7FDBFF').dim(`\n  ${icon}  ${event.name} `));
+            case 'tool_start':
+              this.output.onToolStart(event.name);
               break;
-            }
 
             case 'tool_end':
-              process.stdout.write(chalk.hex('#7FDBFF').dim(`${JSON.stringify(event.input).slice(0, 50)}\n`));
+              this.output.onToolEnd(event.name, event.input);
               break;
 
-            // ── 消息完成 ──
             case 'message_complete':
               completeMessage = event.message;
               break;
           }
         }
 
-        // 没有工具调用 → 这是最终回复
+        // 没有工具调用 → 最终回复
         if (!completeMessage?.tool_calls || completeMessage.tool_calls.length === 0) {
           fullResponse = iterationText;
           if (fullResponse) {
             this.session.add('assistant', fullResponse);
           }
-          process.stdout.write('\n');
+          this.output.onTextComplete();
           break;
         }
 
-        // 有工具调用 → 执行工具，然后继续下一轮流式
+        // 有工具调用 → 执行工具
+        // 先清理可能存在的流式渲染器
+        if (iterationText) {
+          this.output.onTextComplete();
+        }
         messages.push(completeMessage);
 
         for (const tc of completeMessage.tool_calls) {
           let args;
           try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
 
-          process.stdout.write(chalk.hex('#7FDBFF').dim(`  ↳ ${tc.function.name} `));
+          this.output.onToolExec(tc.function.name);
+
+          // 命令执行需要用户确认
+          if (tc.function.name === 'run_command' && args.command) {
+            const confirmed = await this.output.confirmCommand(args.command);
+            if (!confirmed) {
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: '用户拒绝执行该命令。',
+              });
+              this.output.onError('命令已被用户拒绝');
+              continue;
+            }
+          }
+
           const result = await executeTool(tc.function.name, args);
-          process.stdout.write(chalk.green.dim('✓') + '\n');
+          this.output.onToolResult();
 
           messages.push({
             role: 'tool',
@@ -166,17 +256,13 @@ export class ChatEngine {
           });
         }
 
-        // 重置本轮文本，准备下一轮流式
         iterationText = '';
 
       } catch (error) {
-        // 失败时回退到纯流式（无工具）
         if (iterationText) {
-          process.stdout.write('\n');
-          console.error(chalk.yellow(`  ⚠  ${error.message}，重试中…`));
-        } else {
-          console.error(chalk.yellow(`  ⚠  ${error.message}`));
+          this.output.onTextComplete();
         }
+        this.output.onError(`${error.message}，重试中…`);
         fullResponse = await this._streamResponse();
         break;
       }
@@ -193,18 +279,18 @@ export class ChatEngine {
     let fullResponse = '';
 
     for await (const chunk of chat(messages)) {
-      process.stdout.write(chalk.hex('#FFB347')(chunk));
+      this.output.onTextDelta(chunk);
       fullResponse += chunk;
     }
 
-    process.stdout.write('\n');
+    this.output.onTextComplete();
     this.session.add('assistant', fullResponse);
 
     return fullResponse;
   }
 
   /**
-   * 更新系统提示词（灵魂进化 / 模式切换后需要）
+   * 更新系统提示词
    */
   updateSystemPrompt(newPrompt) {
     const messages = this.session.getMessages();
@@ -214,8 +300,7 @@ export class ChatEngine {
   }
 
   /**
-   * 压缩会话历史（清除工具调用的中间消息，保留结果摘要）
-   * 用于模式切换或上下文接近限制时
+   * 压缩会话历史（清除工具调用中间消息，保留结果摘要）
    */
   compressHistory() {
     const msgs = this.session.getMessages();
@@ -224,25 +309,19 @@ export class ChatEngine {
     for (let i = 0; i < msgs.length; i++) {
       const msg = msgs[i];
 
-      // 保留 system、user、纯文本 assistant
       if (msg.role === 'system' || msg.role === 'user') {
         compressed.push(msg);
         continue;
       }
 
-      // assistant 有 tool_calls → 跳过 tool_calls 和后续 tool results
-      // 但保留 assistant 最终文本回复
       if (msg.role === 'assistant' && msg.tool_calls) {
-        // 跳过这个 assistant（带 tool_calls）和后续的 tool messages
         continue;
       }
 
       if (msg.role === 'tool') {
-        // 跳过工具结果
         continue;
       }
 
-      // 纯文本 assistant
       compressed.push(msg);
     }
 

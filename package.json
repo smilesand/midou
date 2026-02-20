@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "start": "node src/index.js",
+    "start:classic": "node src/index.js --no-ui",
     "chat": "node src/index.js chat",
     "heartbeat": "node src/index.js heartbeat",
     "evolve": "node src/index.js evolve",
@@ -34,10 +35,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.77.0",
+    "blessed": "^0.1.81",
     "chalk": "^5.4.1",
     "dayjs": "^1.11.13",
     "dotenv": "^16.4.7",
     "inquirer": "^12.3.2",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "node-notifier": "^10.0.1",
     "openai": "^4.80.0",
     "ora": "^8.1.1"
   }
