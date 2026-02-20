@@ -269,7 +269,7 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
     const summary = getSchedulerSummary();
     ui.updateStatus({
       tasks: summary.activeCount,
-      lastTask: `⏰ ${reminder.text}`,
+      nextTask: summary.nextTask ? `⏰ ${summary.nextTask}` : '',
     });
   });
 
@@ -278,7 +278,7 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
   if (schedulerSummary.activeCount > 0) {
     ui.updateStatus({
       tasks: schedulerSummary.activeCount,
-      lastTask: schedulerSummary.lastTask ? `⏰ ${schedulerSummary.lastTask}` : '',
+      nextTask: schedulerSummary.nextTask ? `⏰ ${schedulerSummary.nextTask}` : '',
     });
   }
 

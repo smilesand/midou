@@ -219,7 +219,7 @@ export class BlessedUI {
       heartbeat: 0,
       mcp: 0,
       tasks: 0,
-      lastTask: '',
+      nextTask: '',
       status: '就绪',
     };
   }
@@ -305,9 +305,26 @@ export class BlessedUI {
       style: { fg: 'white', bg: 'default' },
     });
 
-    // 让 inputBox 可被 focus 以便 screen.render 时定位光标
+    // 让 inputBox 可被 focus
     this.inputBox.focus();
-    this.inputBox._updateCursor = () => this._positionCursor();
+
+    // blessed 在 screen.render() 末尾调用 this.focused._updateCursor(true)，
+    // 仅对当前焦点元素生效。为确保光标始终定位到输入框（即使鼠标滚动 chatBox
+    // 导致焦点转移），我们：
+    // 1. 在 inputBox 上设置 _updateCursor（焦点在 inputBox 时生效）
+    // 2. 在 screen 的 render 事件中兜底定位（焦点不在 inputBox 时生效）
+    this.inputBox._updateCursor = () => {
+      if (!this._confirmState) this._positionCursor();
+    };
+    this.screen.on('render', () => {
+      if (!this._confirmState) this._positionCursor();
+    });
+
+    // 鼠标滚动 chatBox/todoPanel 后自动归还焦点给输入框
+    this.chatBox.on('wheeldown', () => { this.inputBox.focus(); });
+    this.chatBox.on('wheelup', () => { this.inputBox.focus(); });
+    this.todoPanel.on('wheeldown', () => { this.inputBox.focus(); });
+    this.todoPanel.on('wheelup', () => { this.inputBox.focus(); });
 
     this._setupInput();
     this._updateStatusBar();
@@ -411,13 +428,20 @@ export class BlessedUI {
 
   _positionCursor() {
     try {
-      const lpos = this.inputBox.lpos;
-      if (!lpos) return;
-      // 使用 unicode.strWidth 计算光标前文本的显示宽度（CJK 字符占两列）
       const textBeforeCursor = this._inputValue.slice(0, this._inputCursor);
       const displayWidth = unicode.strWidth(textBeforeCursor);
-      const cx = lpos.xi + this.inputBox.ileft + displayWidth;
-      const cy = lpos.yi + this.inputBox.itop;
+
+      let cx, cy;
+      const lpos = this.inputBox.lpos;
+      if (lpos) {
+        cx = lpos.xi + this.inputBox.ileft + displayWidth;
+        cy = lpos.yi + this.inputBox.itop;
+      } else {
+        // lpos 未就绪时使用手动计算（inputBorder: bottom=0, height=3, border=1; inputBox: left=1）
+        cx = 2 + displayWidth;
+        cy = this.screen.rows - 2;
+      }
+
       this.screen.program.cup(cy, cx);
       if (this.screen.program.cursorHidden) {
         this.screen.program.showCursor();
@@ -474,8 +498,8 @@ export class BlessedUI {
     if (s.mcp > 0) {
       parts.push(`🔌 ${s.mcp}`);
     }
-    if (s.lastTask) {
-      parts.push(s.lastTask.length > 20 ? s.lastTask.slice(0, 20) + '…' : s.lastTask);
+    if (s.nextTask) {
+      parts.push(s.nextTask.length > 20 ? s.nextTask.slice(0, 20) + '…' : s.nextTask);
     }
     parts.push(s.status);
     this.statusBar.setContent(parts.join(' │ '));

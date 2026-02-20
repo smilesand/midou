@@ -14,9 +14,10 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
+import dayjs from 'dayjs';
 import { readFile, writeFile, appendFile, deleteFile, listDir, getWorkspacePath } from './soul.js';
 import { addLongTermMemory, writeJournal } from './memory.js';
-import { addReminder, removeReminder, toggleReminder, listReminders, formatReminders } from './scheduler.js';
+import { addReminder, removeReminder, toggleReminder, listReminders, formatReminders, addSchedule, removeSchedule, listSchedules } from './scheduler.js';
 import { loadSkillContent, listSkillNames } from './skills.js';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems, removeTodoItem } from './ui.js';
@@ -231,6 +232,71 @@ export const toolDefinitions = [
           },
         },
         required: ['id'],
+      },
+    },
+  },
+
+  // ── 永久定时任务 ──────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'add_schedule',
+      description: '创建永久定时任务，保存到灵魂空间，每次启动自动加载。适合每天/每周/每月固定时间的提醒。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: {
+            type: 'string',
+            description: '任务描述，例如"每日站会"',
+          },
+          time: {
+            type: 'string',
+            description: '触发时间，格式 HH:MM，例如"09:00"',
+          },
+          repeat: {
+            type: 'string',
+            enum: ['daily', 'weekly', 'monthly'],
+            description: '重复方式：daily=每天，weekly=每周，monthly=每月',
+          },
+          weekday: {
+            type: 'number',
+            description: 'weekly 模式时的星期几（0=周日，1=周一，...，6=周六）',
+          },
+          day: {
+            type: 'number',
+            description: 'monthly 模式时的日期（1-31）',
+          },
+        },
+        required: ['text', 'time', 'repeat'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remove_schedule',
+      description: '删除一个永久定时任务',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: '要删除的定时任务 ID',
+          },
+        },
+        required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_schedules',
+      description: '列出所有永久定时任务',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
       },
     },
   },
@@ -538,6 +604,31 @@ export async function executeTool(name, args) {
     case 'cancel_reminder': {
       const removed = await removeReminder(args.id);
       return removed ? `已取消提醒 [${args.id}]` : `未找到提醒 [${args.id}]`;
+    }
+
+    // ── 永久定时任务 ──
+    case 'add_schedule': {
+      const sch = await addSchedule(args.text, args.time, args.repeat, args.weekday, args.day);
+      const repeatLabels = { daily: '每天', weekly: '每周', monthly: '每月' };
+      return `已创建永久定时任务 [${sch.id}]: "${sch.text}" (${repeatLabels[sch.repeat]} ${sch.time})，下次触发: ${sch.nextTrigger}`;
+    }
+
+    case 'remove_schedule': {
+      const ok = await removeSchedule(args.id);
+      return ok ? `已删除定时任务 [${args.id}]` : `未找到定时任务 [${args.id}]`;
+    }
+
+    case 'list_schedules': {
+      const list = listSchedules();
+      if (list.length === 0) return '当前没有永久定时任务';
+      const repeatLabels = { daily: '每天', weekly: '每周', monthly: '每月' };
+      const weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
+      return list.map(s => {
+        let desc = `${repeatLabels[s.repeat] || s.repeat} ${s.time}`;
+        if (s.repeat === 'weekly' && s.weekday != null) desc += ` 周${weekdayNames[s.weekday]}`;
+        if (s.repeat === 'monthly' && s.day != null) desc += ` ${s.day}号`;
+        return `[${s.id}] ${s.text} — ${desc}，下次: ${dayjs(s.nextTrigger).format('MM-DD HH:mm')}`;
+      }).join('\n');
     }
 
     // ── 技能 ──

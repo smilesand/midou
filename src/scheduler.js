@@ -5,6 +5,7 @@
  * 就像猫咪的生物钟一样精准。
  * 
  * 提醒存储在 ~/.midou/reminders.json
+ * 永久定时任务存储在 ~/.midou/schedules.json（每次启动自动加载）
  */
 
 import fs from 'fs/promises';
@@ -15,8 +16,10 @@ import notifier from 'node-notifier';
 import config from '../midou.config.js';
 
 const REMINDERS_FILE = path.join(config.workspace.root, 'reminders.json');
+const SCHEDULES_FILE = path.join(config.workspace.root, 'schedules.json');
 
 let reminders = [];
+let schedules = [];
 let schedulerTimer = null;
 let nextId = 1;
 
@@ -40,6 +43,102 @@ async function loadReminders() {
  */
 async function saveReminders() {
   await fs.writeFile(REMINDERS_FILE, JSON.stringify({ reminders, nextId }, null, 2), 'utf-8');
+}
+
+// ─── 永久定时任务（schedules） ────────────────────────
+
+/**
+ * 计算某个 schedule 的下一次触发时间
+ * @param {object} schedule - { time: "HH:MM", repeat: "daily"|"weekly"|"monthly", weekday?: 0-6, day?: 1-31 }
+ * @returns {Date}
+ */
+function calcNextTrigger(schedule) {
+  const [h, m] = schedule.time.split(':').map(Number);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0);
+
+  if (schedule.repeat === 'weekly' && schedule.weekday != null) {
+    // weekday: 0=周日, 1=周一, ... 6=周六
+    let daysUntil = (schedule.weekday - now.getDay() + 7) % 7;
+    const target = new Date(today.getTime() + daysUntil * 86400000);
+    if (target <= now) target.setTime(target.getTime() + 7 * 86400000);
+    return target;
+  }
+
+  if (schedule.repeat === 'monthly' && schedule.day != null) {
+    const target = new Date(now.getFullYear(), now.getMonth(), schedule.day, h, m, 0);
+    if (target <= now) target.setMonth(target.getMonth() + 1);
+    return target;
+  }
+
+  // daily（默认）
+  if (today <= now) today.setDate(today.getDate() + 1);
+  return today;
+}
+
+/**
+ * 加载永久定时任务
+ */
+async function loadSchedules() {
+  try {
+    const data = await fs.readFile(SCHEDULES_FILE, 'utf-8');
+    schedules = JSON.parse(data) || [];
+  } catch {
+    schedules = [];
+  }
+}
+
+/**
+ * 持久化永久定时任务
+ */
+async function saveSchedules() {
+  await fs.writeFile(SCHEDULES_FILE, JSON.stringify(schedules, null, 2), 'utf-8');
+}
+
+/**
+ * 添加永久定时任务
+ * @param {string} text - 任务描述
+ * @param {string} time - 触发时间 "HH:MM"
+ * @param {string} repeat - 重复方式: "daily" | "weekly" | "monthly"
+ * @param {number} [weekday] - 周几 (0=日 1=一 ... 6=六)，weekly 时必填
+ * @param {number} [day] - 几号 (1-31)，monthly 时必填
+ */
+export async function addSchedule(text, time, repeat = 'daily', weekday = null, day = null) {
+  const id = `sch_${Date.now()}`;
+  const schedule = { id, text, time, repeat, enabled: true };
+  if (repeat === 'weekly' && weekday != null) schedule.weekday = weekday;
+  if (repeat === 'monthly' && day != null) schedule.day = day;
+  schedule.nextTrigger = calcNextTrigger(schedule).toISOString();
+  schedules.push(schedule);
+  await saveSchedules();
+  return schedule;
+}
+
+/**
+ * 删除永久定时任务
+ */
+export async function removeSchedule(id) {
+  const idx = schedules.findIndex(s => s.id === id);
+  if (idx === -1) return false;
+  schedules.splice(idx, 1);
+  await saveSchedules();
+  return true;
+}
+
+/**
+ * 列出永久定时任务
+ */
+export function listSchedules() {
+  return schedules.map(s => ({
+    id: s.id,
+    text: s.text,
+    time: s.time,
+    repeat: s.repeat,
+    weekday: s.weekday,
+    day: s.day,
+    enabled: s.enabled,
+    nextTrigger: s.nextTrigger,
+  }));
 }
 
 /**
@@ -105,13 +204,14 @@ export function listReminders() {
 }
 
 /**
- * 检查并触发到期的提醒
- * @param {function} onFire - 触发时的回调 (reminder) => void
+ * 检查并触发到期的提醒和永久任务
+ * @param {function} onFire - 触发时的回调 (item) => void
  */
 async function checkReminders(onFire) {
   const now = Date.now();
   let changed = false;
 
+  // 检查普通提醒
   for (const reminder of reminders) {
     if (!reminder.active) continue;
 
@@ -119,28 +219,23 @@ async function checkReminders(onFire) {
     if (now >= triggerTime) {
       reminder.firedCount++;
 
-      // 通知
-      if (onFire) {
-        onFire(reminder);
-      }
-
-      // 系统通知
-      sendSystemNotification(reminder);
-
+      // 先更新状态，再通知（确保回调中获取的 summary 是最新的）
       if (reminder.repeat) {
-        // 重复提醒：设置下一次触发时间
         reminder.nextTrigger = new Date(now + reminder.intervalMinutes * 60 * 1000).toISOString();
       } else {
-        // 一次性提醒：标记为非活跃
         reminder.active = false;
       }
 
       changed = true;
+
+      if (onFire) {
+        onFire(reminder);
+      }
+      sendSystemNotification(reminder);
     }
   }
 
   if (changed) {
-    // 清除已完成的非重复提醒（保留记录最多 50 条）
     const inactive = reminders.filter(r => !r.active);
     if (inactive.length > 50) {
       reminders = [
@@ -150,6 +245,27 @@ async function checkReminders(onFire) {
     }
     await saveReminders();
   }
+
+  // 检查永久定时任务
+  let schedChanged = false;
+  for (const sch of schedules) {
+    if (!sch.enabled) continue;
+    const triggerTime = new Date(sch.nextTrigger).getTime();
+    if (now >= triggerTime) {
+      // 计算下一次触发时间
+      sch.nextTrigger = calcNextTrigger(sch).toISOString();
+      schedChanged = true;
+
+      if (onFire) {
+        onFire({ text: sch.text, id: sch.id, isSchedule: true });
+      }
+      sendSystemNotification({ text: `[定时] ${sch.text}` });
+    }
+  }
+
+  if (schedChanged) {
+    await saveSchedules();
+  }
 }
 
 /**
@@ -157,6 +273,19 @@ async function checkReminders(onFire) {
  */
 export async function startScheduler(onFire) {
   await loadReminders();
+  await loadSchedules();
+
+  // 启动时重新计算永久任务的下次触发时间（防止旧时间导致集中触发）
+  let schedNeedSave = false;
+  const now = Date.now();
+  for (const sch of schedules) {
+    if (!sch.enabled) continue;
+    if (new Date(sch.nextTrigger).getTime() <= now) {
+      sch.nextTrigger = calcNextTrigger(sch).toISOString();
+      schedNeedSave = true;
+    }
+  }
+  if (schedNeedSave) await saveSchedules();
 
   // 每 30 秒检查一次提醒
   schedulerTimer = setInterval(() => {
@@ -181,17 +310,36 @@ export function stopScheduler() {
 }
 
 /**
- * 格式化提醒列表为可读字符串
+ * 格式化提醒列表为可读字符串（包含普通提醒和永久定时任务）
  */
 export function formatReminders() {
   const active = reminders.filter(r => r.active);
-  if (active.length === 0) return '当前没有活跃的提醒';
+  const enabledSchedules = schedules.filter(s => s.enabled);
+  const lines = [];
 
-  return active.map(r => {
-    const next = dayjs(r.nextTrigger).format('HH:mm:ss');
-    const type = r.repeat ? `每 ${r.intervalMinutes} 分钟` : '一次性';
-    return `[${r.id}] ${r.text} — ${type}，下次: ${next}`;
-  }).join('\n');
+  if (active.length > 0) {
+    lines.push('── 提醒 ──');
+    for (const r of active) {
+      const next = dayjs(r.nextTrigger).format('HH:mm:ss');
+      const type = r.repeat ? `每 ${r.intervalMinutes} 分钟` : '一次性';
+      lines.push(`[${r.id}] ${r.text} — ${type}，下次: ${next}`);
+    }
+  }
+
+  if (enabledSchedules.length > 0) {
+    lines.push('── 永久定时任务 ──');
+    const repeatLabels = { daily: '每天', weekly: '每周', monthly: '每月' };
+    const weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
+    for (const s of enabledSchedules) {
+      let desc = `${repeatLabels[s.repeat] || s.repeat} ${s.time}`;
+      if (s.repeat === 'weekly' && s.weekday != null) desc += ` 周${weekdayNames[s.weekday]}`;
+      if (s.repeat === 'monthly' && s.day != null) desc += ` ${s.day}号`;
+      const next = dayjs(s.nextTrigger).format('MM-DD HH:mm');
+      lines.push(`[${s.id}] ${s.text} — ${desc}，下次: ${next}`);
+    }
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '当前没有活跃的提醒或定时任务';
 }
 
 /**
@@ -199,12 +347,18 @@ export function formatReminders() {
  */
 export function getSchedulerSummary() {
   const active = reminders.filter(r => r.active);
-  const lastFired = reminders
-    .filter(r => r.firedCount > 0)
-    .sort((a, b) => b.firedCount - a.firedCount)[0];
+  const enabledSchedules = schedules.filter(s => s.enabled);
+  const totalCount = active.length + enabledSchedules.length;
+
+  // 合并所有任务，找下一个最近将要触发的
+  const allItems = [
+    ...active.map(r => ({ text: r.text, time: new Date(r.nextTrigger).getTime() })),
+    ...enabledSchedules.map(s => ({ text: s.text, time: new Date(s.nextTrigger).getTime() })),
+  ].sort((a, b) => a.time - b.time);
+
   return {
-    activeCount: active.length,
-    lastTask: lastFired ? lastFired.text : '',
+    activeCount: totalCount,
+    nextTask: allItems.length > 0 ? allItems[0].text : '',
   };
 }
 
