@@ -279,6 +279,15 @@ export class BlessedUI {
       mcp: 0,
       status: '就绪',
     };
+
+    // 可选命令列表（用于补全）
+    this._commands = [
+      '/help', '/think', '/copy', '/soul', '/evolve', '/memory',
+      '/status', '/mode', '/heartbeat', '/where', '/skills',
+      '/mcp', '/reminders', '/quit', '/exit', '/bye'
+    ];
+    this._lastTabPrefix = null;
+    this._tabMatchIndex = -1;
   }
 
   init() {
@@ -428,6 +437,12 @@ export class BlessedUI {
       return;
     }
 
+    // 重置 Tab 补全状态（如果当前不是 Tab 键）
+    if (key.name !== 'tab') {
+      this._lastTabPrefix = null;
+      this._tabMatchIndex = -1;
+    }
+
     // 回合制：AI 处理期间禁止所有输入操作
     if (this._processing) return;
 
@@ -461,6 +476,11 @@ export class BlessedUI {
 
     if (key.name === 'up' || key.name === 'down') {
       this._moveCursorVertical(key.name === 'up' ? -1 : 1);
+      return;
+    }
+
+    if (key.name === 'tab') {
+      this._handleTabComplete();
       return;
     }
 
@@ -556,13 +576,63 @@ export class BlessedUI {
     this._renderInput();
   }
 
+  /**
+   * 处理 Tab 键补全（支持循环切换）
+   */
+  _handleTabComplete() {
+    if (!this._inputValue.startsWith('/')) return;
+
+    const currentInput = this._inputValue;
+    
+    // 如果是第一次按 Tab，或者输入内容发生了变化（非补全导致的），初始化补全状态
+    if (this._lastTabPrefix === null) {
+      this._lastTabPrefix = currentInput;
+      this._tabMatchIndex = 0;
+    } else {
+      // 连续按 Tab，切换下一个匹配项
+      this._tabMatchIndex++;
+    }
+
+    const matches = this._commands.filter(c => c.startsWith(this._lastTabPrefix));
+    
+    if (matches.length > 0) {
+      const idx = this._tabMatchIndex % matches.length;
+      this._inputValue = matches[idx];
+      this._inputCursor = this._inputValue.length;
+      this._renderInput();
+    } else {
+      // 无匹配，重置状态
+      this._lastTabPrefix = null;
+      this._tabMatchIndex = -1;
+    }
+  }
+
+  /**
+   * 获取命令补全建议
+   */
+  _getCommandHint() {
+    if (!this._inputValue.startsWith('/') || this._inputValue.includes(' ')) return '';
+    const match = this._commands.find(c => c.startsWith(this._inputValue));
+    if (match && match !== this._inputValue) {
+      return match.slice(this._inputValue.length);
+    }
+    return '';
+  }
+
   _renderInput() {
     if (this._processing) {
-      // 使用标准点号代替 Unicode 省略号，防止部分终端渲染宽度计算不一致导致残留
-      this.inputBox.setContent('{#888888-fg}⏳ 等待回复中...{/#888888-fg}');
+      // 在显示等待提示前彻底清理
+      this.inputBox.clearPos();
+      this.inputBox.setContent('{#888888-fg}⏳ 正在回复...{/#888888-fg}');
     } else {
-      // 确保在设置新内容前清空，避免残留
-      this.inputBox.setContent(blessed.escape(this._inputValue));
+      const hint = this._getCommandHint();
+      let content = blessed.escape(this._inputValue);
+      if (hint) {
+        content += `{#444444-fg}${blessed.escape(hint)}{/#444444-fg}`;
+      }
+      // 彻底清理并设置新内容
+      this.inputBox.clearPos();
+      this.inputBox.setContent(content);
     }
     this.screen.render();
   }
@@ -611,6 +681,7 @@ export class BlessedUI {
       // 确保光标在屏幕范围内
       if (cy >= baseY && cy < baseY + boxHeight) {
         setImmediate(() => {
+          if (!this.screen || !this.screen.program) return;
           this.screen.program.cup(cy, cx);
           if (this.screen.program.cursorHidden) {
             this.screen.program.showCursor();
