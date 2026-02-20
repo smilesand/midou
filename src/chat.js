@@ -56,7 +56,8 @@ export class StdoutOutputHandler {
   onTextComplete(truncated = false) {
     process.stdout.write('\n');
     if (truncated) {
-      process.stdout.write(chalk.yellow('  ⚠ 输出因 token 限制被截断，可使用 /mode full 切换到全能模式获取更长回复\n'));
+      process.stdout.write(chalk.yellow('  ⚠ 输出可能因 token 限制被截断。\n'));
+      process.stdout.write(chalk.yellow('  💡 输入 "继续" 或使用 /mode full 切换到全能模式获取更长回复\n'));
     }
   }
 
@@ -213,21 +214,32 @@ export class ChatEngine {
           }
         }
 
+        // 累计本轮文本到总回复
+        if (iterationText) {
+          fullResponse += iterationText;
+        }
+
+        // 检查截断：除了自然的结束和工具调用外，都视为截断
+        const stopReason = completeMessage?._stopReason;
+        const naturalStops = ['end_turn', 'stop', 'stop_sequence', 'tool_use', 'tool_calls'];
+        const isTruncated = stopReason === 'max_tokens' || (stopReason && !naturalStops.includes(stopReason));
+
         // 没有工具调用 → 最终回复
         if (!completeMessage?.tool_calls || completeMessage.tool_calls.length === 0) {
-          fullResponse = iterationText;
-          if (fullResponse) {
-            this.session.add('assistant', fullResponse);
+          if (iterationText) {
+            this.session.add('assistant', iterationText);
           }
-          const truncated = completeMessage?._stopReason === 'max_tokens' || completeMessage?._stopReason === 'length';
-          this.output.onTextComplete(truncated);
+          this.output.onTextComplete(isTruncated);
           break;
         }
 
         // 有工具调用 → 执行工具
-        // 先清理可能存在的流式渲染器
+        // 如果文本被截断但又有工具调用，说明可能还有更多工具没来得及叫，或者文本没说完
         if (iterationText) {
-          this.output.onTextComplete();
+          this.output.onTextComplete(isTruncated);
+        } else if (isTruncated) {
+          // 只有工具调用且被截断
+          this.output.onTextComplete(true);
         }
         
         // 将带工具调用的回复添加到 session，确保历史完整
@@ -268,6 +280,14 @@ export class ChatEngine {
           messages.push(resultMsg);
         }
 
+        // 如果本轮已经因为 token 限制截断了，且后面还要继续（工具调用后通常会继续），
+        // 最好在这里中断，或者提醒用户。
+        // 但由于我们是在 while 循环中，如果不 break，它会带着工具结果继续请求。
+        // 如果 stopReason 是 max_tokens，说明即使有了工具结果，模型可能也无法完整思考。
+        if (isTruncated) {
+          break;
+        }
+
         iterationText = '';
 
       } catch (error) {
@@ -289,14 +309,28 @@ export class ChatEngine {
   async _streamResponse() {
     const messages = this.session.getMessages();
     let fullResponse = '';
+    let stopReason = null;
 
-    for await (const chunk of chat(messages)) {
-      this.output.onTextDelta(chunk);
-      fullResponse += chunk;
+    try {
+      for await (const event of chatStreamWithTools(messages, [])) {
+        if (event.type === 'text_delta') {
+          this.output.onTextDelta(event.text);
+          fullResponse += event.text;
+        } else if (event.type === 'message_complete') {
+          stopReason = event.stopReason;
+        }
+      }
+
+      const naturalStops = ['end_turn', 'stop', 'stop_sequence'];
+      const isTruncated = stopReason === 'max_tokens' || (stopReason && !naturalStops.includes(stopReason));
+
+      this.output.onTextComplete(isTruncated);
+      if (fullResponse) {
+        this.session.add('assistant', fullResponse);
+      }
+    } catch (error) {
+      this.output.onError(`重试失败: ${error.message}`);
     }
-
-    this.output.onTextComplete();
-    this.session.add('assistant', fullResponse);
 
     return fullResponse;
   }

@@ -197,7 +197,8 @@ export class BlessedOutputHandler {
       this._rawText = '';
     }
     if (truncated) {
-      this.ui.appendChat('{yellow-fg}⚠ 输出因 token 限制被截断，可用 /mode full 获取更长回复{/yellow-fg}');
+      this.ui.appendChat('{yellow-fg}⚠ 输出可能因 token 限制被截断。{/yellow-fg}');
+      this.ui.appendChat('{yellow-fg}💡 输入 "继续" 或使用 /mode full 切换到全能模式获取更长回复。{/yellow-fg}');
     }
     this.ui.appendChat('{#555555-fg}── ✓ 完成 ──{/#555555-fg}');
     this.ui.appendChat('');

@@ -160,11 +160,18 @@ export async function* chat(messages, options = {}) {
       max_tokens: maxTokens,
       temperature,
     });
+    
+    let stopReason = null;
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
         yield event.delta.text;
       }
+      if (event.type === 'message_delta') {
+        stopReason = event.delta?.stop_reason;
+      }
     }
+    // 注意：这里的 yield 还是纯文本，为了保持兼容性，不 yield 事件对象
+    // 但我们可以通过某种方式传递 stopReason，或者干脆让调用方使用 chatStreamWithTools
   } else {
     const stream = await openaiClient.chat.completions.create({
       model, messages, temperature, max_tokens: maxTokens, stream: true,
@@ -279,6 +286,10 @@ export async function* chatStreamWithTools(messages, tools, options = {}) {
 
     for await (const event of stream) {
       switch (event.type) {
+        case 'message_start': {
+          if (event.message?.stop_reason) stopReason = event.message.stop_reason;
+          break;
+        }
         case 'content_block_start': {
           const block = event.content_block;
           currentBlockType = block.type;
@@ -335,7 +346,7 @@ export async function* chatStreamWithTools(messages, tools, options = {}) {
         content: fullText || null,
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       },
-      stopReason,
+      stopReason: stopReason || 'end_turn',
     };
 
   } else {
@@ -395,6 +406,10 @@ export async function* chatStreamWithTools(messages, tools, options = {}) {
       });
     }
 
+    // 映射 OpenAI 的 finish_reason 到统一的 stopReason
+    const normalizedStopReason = stopReason === 'length' ? 'max_tokens' 
+      : (stopReason === 'tool_calls' ? 'tool_use' : (stopReason || 'stop'));
+
     yield {
       type: 'message_complete',
       message: {
@@ -402,7 +417,7 @@ export async function* chatStreamWithTools(messages, tools, options = {}) {
         content: fullText || null,
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       },
-      stopReason: stopReason === 'tool_calls' ? 'tool_use' : (stopReason || 'end_turn'),
+      stopReason: normalizedStopReason,
     };
   }
 }
