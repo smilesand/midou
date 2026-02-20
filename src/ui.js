@@ -442,6 +442,9 @@ export class BlessedUI {
         this.appendChat(`{red-fg}⚠  错误: ${blessed.escape(err.message)}{/red-fg}`);
       }).finally(() => {
         this._processing = false;
+        // 彻底清空一次，防止残留
+        this.inputBox.setContent('');
+        this.screen.render();
         this._renderInput();
       });
       return;
@@ -455,6 +458,12 @@ export class BlessedUI {
       if (this._inputCursor < this._inputValue.length) { this._inputCursor++; this._renderInput(); }
       return;
     }
+
+    if (key.name === 'up' || key.name === 'down') {
+      this._moveCursorVertical(key.name === 'up' ? -1 : 1);
+      return;
+    }
+
     if (key.name === 'home') {
       this._inputCursor = 0;
       this._renderInput();
@@ -490,10 +499,69 @@ export class BlessedUI {
     }
   }
 
+  /**
+   * 计算指定字符索引的视觉坐标
+   */
+  _getCursorCoords(index) {
+    const textBefore = this._inputValue.slice(0, index);
+    const displayWidth = unicode.strWidth(textBefore);
+    const lpos = this.inputBox.lpos;
+    let boxWidth = 80; // 默认回退值
+    if (lpos) {
+      boxWidth = (lpos.xl - lpos.xi) - this.inputBox.iwidth;
+    }
+    if (boxWidth <= 0) boxWidth = 1;
+
+    const row = Math.floor(displayWidth / boxWidth);
+    const col = displayWidth % boxWidth;
+    return { row, col, boxWidth };
+  }
+
+  /**
+   * 处理光标上下移动
+   */
+  _moveCursorVertical(delta) {
+    if (this._inputValue.length === 0) return;
+
+    const cur = this._getCursorCoords(this._inputCursor);
+    const targetRow = cur.row + delta;
+
+    if (targetRow < 0) {
+      this._inputCursor = 0;
+    } else {
+      // 寻找目标行最接近原列位置的索引
+      let bestIndex = delta < 0 ? 0 : this._inputValue.length;
+      let minDiff = Infinity;
+      let foundInRow = false;
+
+      // 简单遍历搜索：在长文本中可能有效率问题，但对于输入框足够了
+      for (let i = 0; i <= this._inputValue.length; i++) {
+        const coords = this._getCursorCoords(i);
+        if (coords.row === targetRow) {
+          foundInRow = true;
+          const diff = Math.abs(coords.col - cur.col);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestIndex = i;
+          }
+        }
+      }
+
+      if (foundInRow) {
+        this._inputCursor = bestIndex;
+      } else if (delta > 0) {
+        this._inputCursor = this._inputValue.length;
+      }
+    }
+    this._renderInput();
+  }
+
   _renderInput() {
     if (this._processing) {
-      this.inputBox.setContent('{#888888-fg}⏳ 等待回复中…{/#888888-fg}');
+      // 使用标准点号代替 Unicode 省略号，防止部分终端渲染宽度计算不一致导致残留
+      this.inputBox.setContent('{#888888-fg}⏳ 等待回复中...{/#888888-fg}');
     } else {
+      // 确保在设置新内容前清空，避免残留
       this.inputBox.setContent(blessed.escape(this._inputValue));
     }
     this.screen.render();
@@ -501,7 +569,8 @@ export class BlessedUI {
 
   _positionCursor() {
     try {
-      if (this._processing) return;
+      // 即使在处理中也允许重定位光标，确保输入后光标能回到起始位置
+      // if (this._processing) return;
 
       const textBeforeCursor = this._inputValue.slice(0, this._inputCursor);
       const displayWidth = unicode.strWidth(textBeforeCursor);
