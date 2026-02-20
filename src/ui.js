@@ -5,25 +5,28 @@
  *   ┌─── 状态栏 ──────────────────────────────────────┐
  *   │ 🐱 midou │ ☀️ 标准 │ 模型名 │ 💓 0 │ ⏰ 0    │
  *   ├─── 对话框 ────────────────────┬── TODO 面板 ────┤
- *   │                                │ □ 任务1         │
- *   │ 用户: ...                      │ ✓ 任务2         │
- *   │ midou: ... (渲染后的 md)       │ □ 任务3         │
- *   │                                │                  │
+ *   │ ┌ 你 ──────────────────┐      │ □ 任务1         │
+ *   │ │ 用户消息             │      │ ✓ 任务2         │
+ *   │ └─────────────────────┘      │ □ 任务3         │
+ *   │ ┌ 🐱 ─────────────────┐      │                  │
+ *   │ │ AI 回复 (渲染 md)    │      │                  │
+ *   │ └─────────────────────┘      │                  │
  *   ├─── 输入框 ──────────────────────────────────────┤
  *   │ > 输入消息...                                    │
  *   └────────────────────────────────────────────────┘
  *
  * 功能:
- *   - 状态栏显示 midou 状态信息 + 定时任务数量 + 最近任务
- *   - 对话框显示渲染后的 md 内容，支持自动滚动和鼠标滚动
- *   - TODO 面板显示 AI 工作计划，实时更新
- *   - 输入框支持常驻输入
- *   - 命令确认支持方向键选择
+ *   - 聊天气泡区分用户/AI/思考/工具消息
+ *   - 输入框支持左右方向键编辑
+ *   - TODO 面板全部完成后自动关闭
  */
 
 import blessed from 'blessed';
 import chalk from 'chalk';
 import { IncrementalMDRenderer, renderMarkdown } from './md-renderer.js';
+
+// blessed 内置的 Unicode 宽度计算（CJK 双宽字符支持）
+const unicode = blessed.unicode;
 
 // ─── TODO 数据管理 ──────────────────────────────────
 
@@ -57,41 +60,83 @@ export function removeTodoItem(id) {
   return false;
 }
 
+// ─── 气泡样式工具 ────────────────────────────────────
+
+/**
+ * 为消息添加气泡边框
+ * @param {string} content - 消息内容（可包含 blessed tags）
+ * @param {'user'|'ai'|'thinking'|'tool'|'system'} role - 角色
+ * @returns {string[]} 气泡行数组
+ */
+function makeBubble(content, role) {
+  const styles = {
+    user:     { color: '{cyan-fg}',    endColor: '{/cyan-fg}',    label: ' 你 ' },
+    ai:       { color: '{#FFB347-fg}', endColor: '{/#FFB347-fg}', label: ' 🐱 ' },
+    thinking: { color: '{#C9B1FF-fg}', endColor: '{/#C9B1FF-fg}', label: ' 💭 ' },
+    tool:     { color: '{#7FDBFF-fg}', endColor: '{/#7FDBFF-fg}', label: ' ⚙ ' },
+    system:   { color: '{yellow-fg}',  endColor: '{/yellow-fg}',  label: ' ℹ ' },
+  };
+  const s = styles[role] || styles.system;
+  const lines = content.split('\n');
+  const result = [];
+
+  result.push(`${s.color}┌─${s.label}${'─'.repeat(Math.max(0, 40 - s.label.length))}${s.endColor}`);
+  for (const line of lines) {
+    result.push(`${s.color}│${s.endColor} ${line}`);
+  }
+  result.push(`${s.color}└${'─'.repeat(42)}${s.endColor}`);
+  return result;
+}
+
 // ─── Blessed UI 输出处理器 ──────────────────────────
 
 export class BlessedOutputHandler {
   constructor(ui) {
     this.ui = ui;
     this._streamRenderer = null;
+    this._thinkingLines = [];
+    this._aiLines = [];
   }
 
   onThinkingStart() {
-    this.ui.appendChat('{#C9B1FF-fg}┌─ 💭 思考中…{/#C9B1FF-fg}');
+    this._thinkingLines = [];
+    this._thinkingLines.push('思考中…');
   }
 
   onThinkingDelta(text) {
     const lines = text.split('\n');
     for (const line of lines) {
       if (line.trim()) {
-        this.ui.appendChat(`{#C9B1FF-fg}│ ${blessed.escape(line)}{/#C9B1FF-fg}`);
+        this._thinkingLines.push(line);
       }
     }
   }
 
   onThinkingEnd(fullText) {
     if (fullText) {
-      this.ui.appendChat(`{#C9B1FF-fg}└─ ${fullText.length} 字{/#C9B1FF-fg}`);
+      this._thinkingLines.push(`── ${fullText.length} 字`);
+      const bubble = makeBubble(
+        this._thinkingLines.map(l => blessed.escape(l)).join('\n'),
+        'thinking'
+      );
+      for (const line of bubble) this.ui.appendChat(line);
       this.ui.appendChat('');
     }
+    this._thinkingLines = [];
   }
 
   onThinkingHidden(length) {
-    this.ui.appendChat(`{#C9B1FF-fg}💭 ${length} 字 — /think 查看{/#C9B1FF-fg}`);
+    const bubble = makeBubble(`${length} 字 — /think 查看`, 'thinking');
+    for (const line of bubble) this.ui.appendChat(line);
   }
 
   onTextDelta(text) {
     if (!this._streamRenderer) {
+      this._aiLines = [];
       this._streamRenderer = new IncrementalMDRenderer((rendered) => {
+        // 收集渲染后的行
+        this._aiLines.push(blessed.escape(rendered));
+        // 实时输出：直接追加（后续 onTextComplete 不再重复）
         this.ui.appendChat(blessed.escape(rendered));
       });
     }
@@ -109,26 +154,27 @@ export class BlessedOutputHandler {
   onToolStart(name) {
     const isMCP = name.startsWith('mcp_');
     const icon = isMCP ? '🔌' : '⚙';
-    this.ui.appendChat(`{#7FDBFF-fg}${icon}  ${blessed.escape(name)}{/#7FDBFF-fg}`);
+    this.ui.appendChat(`{#7FDBFF-fg}┌─ ${icon} ${blessed.escape(name)}{/#7FDBFF-fg}`);
   }
 
   onToolEnd(name, input) {
     const short = JSON.stringify(input).slice(0, 60);
-    this.ui.appendChat(`{#7FDBFF-fg}   ${blessed.escape(short)}{/#7FDBFF-fg}`);
+    this.ui.appendChat(`{#7FDBFF-fg}│ ${blessed.escape(short)}{/#7FDBFF-fg}`);
   }
 
   onToolExec(name) {
-    this.ui.appendChat(`{#7FDBFF-fg}  ↳ ${blessed.escape(name)}…{/#7FDBFF-fg}`);
+    this.ui.appendChat(`{#7FDBFF-fg}│ ↳ ${blessed.escape(name)}…{/#7FDBFF-fg}`);
   }
 
   onToolResult() {
-    this.ui.appendChat('{green-fg}  ✓{/green-fg}');
-    // 工具执行后刷新 TODO 面板
+    this.ui.appendChat('{#7FDBFF-fg}└─ {green-fg}✓{/green-fg}{/#7FDBFF-fg}');
+    this.ui.appendChat('');
     this.ui.refreshTodoPanel();
   }
 
   onError(message) {
-    this.ui.appendChat(`{yellow-fg}⚠  ${blessed.escape(message)}{/yellow-fg}`);
+    const bubble = makeBubble(blessed.escape(message), 'system');
+    for (const line of bubble) this.ui.appendChat(line);
   }
 
   async confirmCommand(command) {
@@ -137,6 +183,14 @@ export class BlessedOutputHandler {
 }
 
 // ─── Blessed 终端 UI ────────────────────────────────
+//
+// 输入机制：不使用 blessed textbox 的 readInput/submit 状态机，
+// 而是直接监听 program 级 keypress 事件，完全自主管理输入状态。
+// 这样做避免了 blessed textbox 的以下问题：
+//   - readInput 内部使用 setImmediate 延迟添加 listener
+//   - _done 执行后删除自身（delete self._done）
+//   - focus() 在已聚焦时是空操作导致 readInput 不被触发
+//   - _updateCursor 中 _getWidth 递归溢出
 
 export class BlessedUI {
   constructor() {
@@ -149,9 +203,16 @@ export class BlessedUI {
     this._onSubmit = null;
     this._onCommand = null;
     this._onQuit = null;
-    this._confirmResolve = null;
     this._processing = false;
     this._todoPanelVisible = false;
+
+    // 输入状态
+    this._inputValue = '';
+    this._inputCursor = 0;
+
+    // 确认弹窗状态（null = 无弹窗）
+    this._confirmState = null;
+
     this._statusInfo = {
       mode: '☀️  标准',
       model: '',
@@ -163,9 +224,6 @@ export class BlessedUI {
     };
   }
 
-  /**
-   * 初始化 UI
-   */
   init() {
     this.screen = blessed.screen({
       smartCSR: true,
@@ -182,10 +240,7 @@ export class BlessedUI {
       width: '100%',
       height: 1,
       tags: true,
-      style: {
-        fg: 'white',
-        bg: '#333333',
-      },
+      style: { fg: 'white', bg: '#333333' },
     });
 
     // 对话框
@@ -198,25 +253,20 @@ export class BlessedUI {
       tags: true,
       scrollable: true,
       alwaysScroll: true,
-      scrollbar: {
-        style: { bg: '#FFB347' },
-      },
+      scrollbar: { style: { bg: '#FFB347' } },
       mouse: true,
       keys: true,
       vi: true,
-      style: {
-        fg: 'white',
-        bg: 'default',
-      },
+      style: { fg: 'white', bg: 'default' },
       padding: { left: 1, right: 1 },
     });
 
-    // TODO 面板（初始隐藏，有任务时显示）
+    // TODO 面板（初始隐藏）
     this.todoPanel = blessed.box({
       parent: this.screen,
       top: 1,
       right: 0,
-      width: 28,
+      width: 30,
       height: '100%-4',
       tags: true,
       scrollable: true,
@@ -230,7 +280,7 @@ export class BlessedUI {
         border: { fg: '#FFD700' },
         label: { fg: '#FFD700' },
       },
-      padding: { left: 0, right: 0 },
+      padding: { left: 1, right: 1 },
       hidden: true,
     });
 
@@ -245,47 +295,45 @@ export class BlessedUI {
       style: { border: { fg: '#FFB347' } },
     });
 
-    // 输入框
-    this.inputBox = blessed.textbox({
+    // 输入框（普通 box，不使用 textbox，避免 readInput 状态机问题）
+    this.inputBox = blessed.box({
       parent: inputBorder,
       top: 0,
       left: 1,
       width: '100%-4',
       height: 1,
-      inputOnFocus: true,
       style: { fg: 'white', bg: 'default' },
     });
 
-    this._setupKeyBindings();
+    // 让 inputBox 可被 focus 以便 screen.render 时定位光标
+    this.inputBox.focus();
+    this.inputBox._updateCursor = () => this._positionCursor();
+
+    this._setupInput();
     this._updateStatusBar();
+    this.screen.program.showCursor();
     this.screen.render();
-    this._focusInput();
   }
 
-  _setupKeyBindings() {
-    this.screen.key(['C-c'], () => {
-      if (this._onQuit) this._onQuit();
-    });
+  // ─── 输入处理 ──────────────────────────────────────
 
-    this.screen.key(['escape'], () => {
-      if (this._confirmResolve) {
-        this._confirmResolve(false);
-        this._confirmResolve = null;
+  /**
+   * 注册唯一的 program 级 keypress 处理器，
+   * 根据当前状态路由到输入框或确认弹窗。
+   */
+  _setupInput() {
+    this.screen.program.on('keypress', (ch, key) => {
+      if (!key) return;
+      // Ctrl-C 全局退出
+      if (key.ctrl && key.name === 'c') {
+        if (this._onQuit) this._onQuit();
         return;
       }
-      if (this._onQuit) this._onQuit();
-    });
-
-    this.inputBox.on('submit', (value) => {
-      this._handleInput(value).catch(err => {
-        this.appendChat(`{red-fg}⚠  错误: ${blessed.escape(err.message)}{/red-fg}`);
-        this._processing = false;
-        this._focusInput();
-      });
-    });
-
-    this.inputBox.on('cancel', () => {
-      this._focusInput();
+      if (this._confirmState) {
+        this._handleConfirmKey(ch, key);
+      } else {
+        this._handleInputKey(ch, key);
+      }
     });
 
     this.chatBox.on('scroll', () => {
@@ -296,33 +344,102 @@ export class BlessedUI {
     });
   }
 
-  async _handleInput(value) {
-    const input = (value || '').trim();
-    if (!input) { this._focusInput(); return; }
-    if (this._processing) { this._focusInput(); return; }
-    this._processing = true;
-
-    this.appendChat(`{cyan-fg}你 › {/cyan-fg}${blessed.escape(input)}`);
-    this.appendChat('');
-
-    try {
-      if (input.startsWith('/')) {
-        if (this._onCommand) await this._onCommand(input);
-      } else {
-        this.appendChat('{#FFB347-fg}🐱 › {/#FFB347-fg}');
-        if (this._onSubmit) await this._onSubmit(input);
-      }
-    } finally {
-      this._processing = false;
+  _handleInputKey(ch, key) {
+    if (key.name === 'escape') {
+      if (this._onQuit) this._onQuit();
+      return;
     }
-    this._focusInput();
+
+    if (key.name === 'enter' || key.name === 'return' || key.name === 'linefeed') {
+      const value = this._inputValue.trim();
+      this._inputValue = '';
+      this._inputCursor = 0;
+      this._renderInput();
+      if (!value || this._processing) return;
+      this._processing = true;
+      this._doHandleInput(value).catch(err => {
+        this.appendChat(`{red-fg}⚠  错误: ${blessed.escape(err.message)}{/red-fg}`);
+      }).finally(() => {
+        this._processing = false;
+      });
+      return;
+    }
+
+    if (key.name === 'left') {
+      if (this._inputCursor > 0) { this._inputCursor--; this._renderInput(); }
+      return;
+    }
+    if (key.name === 'right') {
+      if (this._inputCursor < this._inputValue.length) { this._inputCursor++; this._renderInput(); }
+      return;
+    }
+    if (key.name === 'home') {
+      this._inputCursor = 0; this._renderInput(); return;
+    }
+    if (key.name === 'end') {
+      this._inputCursor = this._inputValue.length; this._renderInput(); return;
+    }
+
+    if (key.name === 'backspace') {
+      if (this._inputCursor > 0) {
+        this._inputValue = this._inputValue.slice(0, this._inputCursor - 1) + this._inputValue.slice(this._inputCursor);
+        this._inputCursor--;
+        this._renderInput();
+      }
+      return;
+    }
+    if (key.name === 'delete') {
+      if (this._inputCursor < this._inputValue.length) {
+        this._inputValue = this._inputValue.slice(0, this._inputCursor) + this._inputValue.slice(this._inputCursor + 1);
+        this._renderInput();
+      }
+      return;
+    }
+
+    // 普通字符输入（过滤所有控制字符 0x00-0x1f 和 DEL 0x7f）
+    if (ch && !key.ctrl && !key.meta && !/^[\x00-\x1f\x7f]$/.test(ch)) {
+      this._inputValue = this._inputValue.slice(0, this._inputCursor) + ch + this._inputValue.slice(this._inputCursor);
+      this._inputCursor++;
+      this._renderInput();
+    }
   }
 
-  _focusInput() {
-    this.inputBox.clearValue();
-    this.inputBox.focus();
+  _renderInput() {
+    this.inputBox.setContent(this._inputValue);
     this.screen.render();
   }
+
+  _positionCursor() {
+    try {
+      const lpos = this.inputBox.lpos;
+      if (!lpos) return;
+      // 使用 unicode.strWidth 计算光标前文本的显示宽度（CJK 字符占两列）
+      const textBeforeCursor = this._inputValue.slice(0, this._inputCursor);
+      const displayWidth = unicode.strWidth(textBeforeCursor);
+      const cx = lpos.xi + this.inputBox.ileft + displayWidth;
+      const cy = lpos.yi + this.inputBox.itop;
+      this.screen.program.cup(cy, cx);
+      if (this.screen.program.cursorHidden) {
+        this.screen.program.showCursor();
+      }
+    } catch (_) { /* 忽略布局过渡异常 */ }
+  }
+
+  // ─── 用户输入分发 ──────────────────────────────────
+
+  async _doHandleInput(input) {
+    const userBubble = makeBubble(blessed.escape(input), 'user');
+    for (const line of userBubble) this.appendChat(line);
+    this.appendChat('');
+
+    if (input.startsWith('/')) {
+      if (this._onCommand) await this._onCommand(input);
+    } else {
+      if (this._onSubmit) await this._onSubmit(input);
+    }
+  }
+
+  // ─── 对话框 ────────────────────────────────────────
 
   appendChat(text) {
     const current = this.chatBox.getContent();
@@ -333,6 +450,8 @@ export class BlessedUI {
     }
     this.screen.render();
   }
+
+  // ─── 状态栏 ────────────────────────────────────────
 
   updateStatus(info) {
     Object.assign(this._statusInfo, info);
@@ -362,35 +481,10 @@ export class BlessedUI {
     this.statusBar.setContent(parts.join(' │ '));
   }
 
-  /**
-   * 显示命令确认对话框（支持方向键选择）
-   */
+  // ─── 命令确认弹窗 ──────────────────────────────────
+
   async confirmCommand(command) {
     return new Promise((resolve) => {
-      this._confirmResolve = resolve;
-      let selected = 0; // 0=确认, 1=拒绝
-
-      const renderButtons = () => {
-        const yesBtn = selected === 0
-          ? '{green-bg}{bold} ✓ 确认执行 {/bold}{/green-bg}'
-          : '{white-fg} ✓ 确认执行 {/white-fg}';
-        const noBtn = selected === 1
-          ? '{red-bg}{bold} ✗ 拒绝 {/bold}{/red-bg}'
-          : '{white-fg} ✗ 拒绝 {/white-fg}';
-        return `${yesBtn}    ${noBtn}`;
-      };
-
-      const updateContent = () => {
-        dialog.setContent(
-          '{yellow-fg}{bold}⚠ 命令确认{/bold}{/yellow-fg}\n\n' +
-          '{white-fg}即将执行以下命令:{/white-fg}\n\n' +
-          `{cyan-fg}$ ${blessed.escape(command)}{/cyan-fg}\n\n` +
-          renderButtons() + '\n\n' +
-          '{white-fg}← → 选择  Enter 确认  Esc 取消{/white-fg}'
-        );
-        this.screen.render();
-      };
-
       const dialog = blessed.box({
         parent: this.screen,
         top: 'center',
@@ -406,39 +500,59 @@ export class BlessedUI {
         tags: true,
       });
 
-      dialog.focus();
-      updateContent();
-
-      const cleanup = (result) => {
-        dialog.destroy();
-        this._confirmResolve = null;
-        this.screen.render();
-        resolve(result);
-      };
-
-      dialog.key(['left', 'right'], (ch, key) => {
-        selected = selected === 0 ? 1 : 0;
-        updateContent();
-      });
-
-      dialog.key(['enter', 'return'], () => {
-        cleanup(selected === 0);
-      });
-
-      dialog.key(['y'], () => cleanup(true));
-      dialog.key(['n', 'escape'], () => cleanup(false));
+      this._confirmState = { selected: 0, command, dialog, resolve };
+      this._renderConfirmDialog();
     });
   }
 
-  /**
-   * 显示/隐藏 TODO 面板
-   */
+  _handleConfirmKey(_ch, key) {
+    if (key.name === 'left' || key.name === 'right') {
+      this._confirmState.selected = this._confirmState.selected === 0 ? 1 : 0;
+      this._renderConfirmDialog();
+      return;
+    }
+    if (key.name === 'enter') {
+      this._resolveConfirm(this._confirmState.selected === 0);
+      return;
+    }
+    if (key.name === 'y') { this._resolveConfirm(true); return; }
+    if (key.name === 'n' || key.name === 'escape') { this._resolveConfirm(false); return; }
+  }
+
+  _renderConfirmDialog() {
+    const s = this._confirmState;
+    const yesBtn = s.selected === 0
+      ? '{green-bg}{bold} ✓ 确认执行 {/bold}{/green-bg}'
+      : '{white-fg} ✓ 确认执行 {/white-fg}';
+    const noBtn = s.selected === 1
+      ? '{red-bg}{bold} ✗ 拒绝 {/bold}{/red-bg}'
+      : '{white-fg} ✗ 拒绝 {/white-fg}';
+    s.dialog.setContent(
+      '{yellow-fg}{bold}⚠ 命令确认{/bold}{/yellow-fg}\n\n' +
+      '{white-fg}即将执行以下命令:{/white-fg}\n\n' +
+      `{cyan-fg}$ ${blessed.escape(s.command)}{/cyan-fg}\n\n` +
+      `${yesBtn}    ${noBtn}\n\n` +
+      '{white-fg}← → 选择  Enter 确认  Y/N 快捷键  Esc 取消{/white-fg}'
+    );
+    this.screen.render();
+  }
+
+  _resolveConfirm(result) {
+    const s = this._confirmState;
+    if (!s) return;
+    s.dialog.destroy();
+    this._confirmState = null;
+    this.screen.render();
+    s.resolve(result);
+  }
+
+  // ─── TODO 面板 ─────────────────────────────────────
+
   showTodoPanel() {
     if (this._todoPanelVisible) return;
     this._todoPanelVisible = true;
     this.todoPanel.show();
-    // 缩小对话框宽度给 TODO 面板留空间
-    this.chatBox.width = '100%-28';
+    this.chatBox.width = '100%-30';
     this.refreshTodoPanel();
     this.screen.render();
   }
@@ -451,18 +565,23 @@ export class BlessedUI {
     this.screen.render();
   }
 
-  /**
-   * 刷新 TODO 面板内容
-   */
   refreshTodoPanel() {
     const items = getTodoItems();
 
-    // 有任务时自动显示面板
-    if (items.length > 0 && !this._todoPanelVisible) {
-      this.showTodoPanel();
+    if (items.length === 0) {
+      if (this._todoPanelVisible) this.hideTodoPanel();
+      return;
     }
 
-    if (!this._todoPanelVisible) return;
+    const allDone = items.every(i => i.status === 'done');
+    if (allDone) {
+      setTimeout(() => this.hideTodoPanel(), 2000);
+    }
+
+    if (!this._todoPanelVisible) {
+      this.showTodoPanel();
+      return;
+    }
 
     const lines = [];
     for (const item of items) {
@@ -484,29 +603,29 @@ export class BlessedUI {
       lines.push(`${color}${icon} ${blessed.escape(title)}${endColor}`);
     }
 
-    // 统计
     const done = items.filter(i => i.status === 'done').length;
     const total = items.length;
-    if (total > 0) {
-      lines.push('');
-      lines.push(`{white-fg}${done}/${total} 完成{/white-fg}`);
-    }
+    lines.push('');
+    lines.push(`{white-fg}${done}/${total} 完成{/white-fg}`);
 
     this.todoPanel.setContent(lines.join('\n'));
     this.screen.render();
   }
 
+  // ─── 消息显示 ──────────────────────────────────────
+
   showSystemMessage(text) {
-    this.appendChat(`{yellow-fg}${blessed.escape(text)}{/yellow-fg}`);
+    const bubble = makeBubble(blessed.escape(text), 'system');
+    for (const line of bubble) this.appendChat(line);
   }
 
   showReminder(reminder) {
     const type = reminder.repeat ? `每 ${reminder.intervalMinutes} 分钟` : '一次性';
+    const content = `⏰ ${reminder.text}` +
+      (reminder.repeat ? `\n${type} · 第 ${reminder.firedCount} 次` : '');
+    const bubble = makeBubble(blessed.escape(content), 'system');
     this.appendChat('');
-    this.appendChat(`{#FFD700-fg}⏰ ${blessed.escape(reminder.text)}{/#FFD700-fg}`);
-    if (reminder.repeat) {
-      this.appendChat(`{white-fg}   ${type} · 第 ${reminder.firedCount} 次{/white-fg}`);
-    }
+    for (const line of bubble) this.appendChat(line);
     this.appendChat('');
   }
 
@@ -515,6 +634,8 @@ export class BlessedUI {
     this.appendChat(`{#FF6B9D-fg}💓 ${blessed.escape(msg.slice(0, 100))}{/#FF6B9D-fg}`);
     this.appendChat('');
   }
+
+  // ─── 生命周期 ──────────────────────────────────────
 
   onSubmit(fn) { this._onSubmit = fn; }
   onCommand(fn) { this._onCommand = fn; }

@@ -286,7 +286,6 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
   if (isFirstBoot) {
     ui.appendChat('{#FFD700-fg}✨ midou 正在进行觉醒仪式…{/#FFD700-fg}');
     ui.appendChat('');
-    ui.appendChat('{#FFB347-fg}🐱 › {/#FFB347-fg}');
     await engine.talk('你好，我是你的创造者。你刚刚醒来，请按照觉醒指引介绍你自己吧。');
     ui.appendChat('');
     await completeBootstrap();
@@ -364,7 +363,6 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
 
       case '/evolve':
         ui.showSystemMessage('🧬 midou 正在自我反思…');
-        ui.appendChat('{#FFB347-fg}🐱 › {/#FFB347-fg}');
         await engine.talk('请进行一次深度自我反思。回顾我们的对话和你的记忆，思考你想要如何进化。如果你决定修改自己的灵魂，请使用 evolve_soul 工具。');
         return;
 
