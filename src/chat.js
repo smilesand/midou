@@ -116,7 +116,7 @@ export class ChatEngine {
    * @param {object} outputHandler - 输出处理器（默认 stdout）
    */
   constructor(systemPrompt, outputHandler = null) {
-    this.session = new SessionMemory(100);
+    this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
     this.showThinking = true;
@@ -229,6 +229,9 @@ export class ChatEngine {
         if (iterationText) {
           this.output.onTextComplete();
         }
+        
+        // 将带工具调用的回复添加到 session，确保历史完整
+        this.session.add(completeMessage);
         messages.push(completeMessage);
 
         for (const tc of completeMessage.tool_calls) {
@@ -241,11 +244,13 @@ export class ChatEngine {
           if (tc.function.name === 'run_command' && args.command) {
             const confirmed = await this.output.confirmCommand(args.command);
             if (!confirmed) {
-              messages.push({
+              const rejectMsg = {
                 role: 'tool',
                 tool_call_id: tc.id,
                 content: '用户拒绝执行该命令。',
-              });
+              };
+              this.session.add(rejectMsg);
+              messages.push(rejectMsg);
               this.output.onError('命令已被用户拒绝');
               continue;
             }
@@ -254,11 +259,13 @@ export class ChatEngine {
           const result = await executeTool(tc.function.name, args);
           this.output.onToolResult();
 
-          messages.push({
+          const resultMsg = {
             role: 'tool',
             tool_call_id: tc.id,
             content: String(result),
-          });
+          };
+          this.session.add(resultMsg);
+          messages.push(resultMsg);
         }
 
         iterationText = '';
@@ -302,35 +309,5 @@ export class ChatEngine {
     if (messages.length > 0 && messages[0].role === 'system') {
       messages[0].content = newPrompt;
     }
-  }
-
-  /**
-   * 压缩会话历史（清除工具调用中间消息，保留结果摘要）
-   */
-  compressHistory() {
-    const msgs = this.session.getMessages();
-    const compressed = [];
-
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
-
-      if (msg.role === 'system' || msg.role === 'user') {
-        compressed.push(msg);
-        continue;
-      }
-
-      if (msg.role === 'assistant' && msg.tool_calls) {
-        continue;
-      }
-
-      if (msg.role === 'tool') {
-        continue;
-      }
-
-      compressed.push(msg);
-    }
-
-    this.session.messages = compressed;
-    return compressed.length;
   }
 }

@@ -49,7 +49,7 @@ export async function logConversation(userMessage, assistantMessage) {
 }
 
 /**
- * 读取最近几天的日记
+ * 读取最近几天的日记（带长度限制）
  */
 export async function getRecentMemories(days = 2) {
   const memories = [];
@@ -62,7 +62,15 @@ export async function getRecentMemories(days = 2) {
     }
   }
 
-  return memories.join('\n\n---\n\n');
+  const combined = memories.join('\n\n---\n\n');
+  
+  // 限制长度，只保留最近的部分（假设越靠后越新）
+  const MAX_JOURNAL_LENGTH = 5000;
+  if (combined.length > MAX_JOURNAL_LENGTH) {
+    return '…' + combined.slice(-MAX_JOURNAL_LENGTH);
+  }
+  
+  return combined;
 }
 
 /**
@@ -102,7 +110,7 @@ export async function listJournals() {
  *   4. 保留系统消息 + 摘要 + 最近对话
  */
 export class SessionMemory {
-  constructor(maxMessages = 100) {
+  constructor(maxMessages = 80) {
     this.messages = [];
     this.maxMessages = maxMessages;
     this.contextSummary = '';   // 被压缩掉的对话的摘要
@@ -113,6 +121,11 @@ export class SessionMemory {
    * 添加消息（支持完整消息对象，用于工具调用链）
    */
   add(roleOrMsg, content) {
+    // 避免重复添加完全相同的消息对象
+    if (typeof roleOrMsg === 'object' && this.messages.includes(roleOrMsg)) {
+      return;
+    }
+
     if (typeof roleOrMsg === 'object') {
       this.messages.push(roleOrMsg);
     } else {
@@ -130,17 +143,32 @@ export class SessionMemory {
   }
 
   getMessages() {
-    const msgs = [...this.messages];
+    // 始终从原始消息列表开始，不污染原始数据
+    let msgs = [...this.messages];
+
+    // 如果消息还是太多（防御性检查），只保留最近的
+    if (msgs.length > this.maxMessages + 10) {
+      const systemMsg = msgs.find(m => m.role === 'system');
+      const nonSystem = msgs.filter(m => m.role !== 'system');
+      msgs = systemMsg 
+        ? [systemMsg, ...nonSystem.slice(-this.maxMessages)]
+        : nonSystem.slice(-this.maxMessages);
+    }
+
     // 如果有上下文摘要，注入到系统消息后面
     if (this.contextSummary && msgs.length > 0 && msgs[0].role === 'system') {
       const summaryMsg = {
         role: 'user',
-        content: `[对话上下文摘要 — 以下是之前对话的要点，帮助你保持连贯性]\n${this.contextSummary}`,
+        content: `[对话上下文摘要 — 以下是之前对话的要点]\n${this.contextSummary}`,
       };
       const assistantAck = {
         role: 'assistant',
-        content: '我已了解之前的对话上下文，会保持连贯性。',
+        content: '我已收到上下文摘要，会保持对话连贯性。',
       };
+      // 避免重复注入（如果 msgs 已经是被污染过的）
+      if (msgs[1]?.content?.includes('[对话上下文摘要')) {
+        return msgs;
+      }
       return [msgs[0], summaryMsg, assistantAck, ...msgs.slice(1)];
     }
     return msgs;
@@ -159,8 +187,8 @@ export class SessionMemory {
     const systemMsg = this.messages.find(m => m.role === 'system');
     const nonSystem = this.messages.filter(m => m.role !== 'system');
 
-    // 保留最近 70% 的消息
-    const keepCount = Math.floor(this.maxMessages * 0.7);
+    // 保留最近 60% 的消息（更激进一点）
+    const keepCount = Math.floor(this.maxMessages * 0.6);
     const dropMessages = nonSystem.slice(0, nonSystem.length - keepCount);
     const keepMessages = nonSystem.slice(nonSystem.length - keepCount);
 
@@ -169,8 +197,8 @@ export class SessionMemory {
     if (summary) {
       this.contextSummary = (this.contextSummary ? this.contextSummary + '\n\n' : '') + summary;
       // 限制摘要长度
-      if (this.contextSummary.length > 2000) {
-        this.contextSummary = this.contextSummary.slice(-2000);
+      if (this.contextSummary.length > 3000) {
+        this.contextSummary = '…' + this.contextSummary.slice(-3000);
       }
     }
 
@@ -184,13 +212,21 @@ export class SessionMemory {
     const points = [];
     for (const msg of messages) {
       if (msg.role === 'user' && msg.content && typeof msg.content === 'string') {
-        const short = msg.content.length > 100 ? msg.content.slice(0, 100) + '…' : msg.content;
+        const short = msg.content.length > 80 ? msg.content.slice(0, 80) + '…' : msg.content;
         points.push(`- 用户: ${short}`);
-      } else if (msg.role === 'assistant' && msg.content && typeof msg.content === 'string' && !msg.tool_calls) {
-        const short = msg.content.length > 100 ? msg.content.slice(0, 100) + '…' : msg.content;
-        points.push(`- midou: ${short}`);
+      } else if (msg.role === 'assistant') {
+        if (msg.tool_calls) {
+          const names = msg.tool_calls.map(tc => tc.function.name).join(', ');
+          points.push(`- midou 使用了工具: ${names}`);
+        } else if (msg.content && typeof msg.content === 'string') {
+          const short = msg.content.length > 80 ? msg.content.slice(0, 80) + '…' : msg.content;
+          points.push(`- midou: ${short}`);
+        }
+      } else if (msg.role === 'tool') {
+        // 工具结果通常比较大，只记录成功/失败
+        const short = String(msg.content).length > 50 ? String(msg.content).slice(0, 50) + '…' : msg.content;
+        points.push(`  ↳ 工具结果: ${short}`);
       }
-      // tool 和带 tool_calls 的 assistant 消息不入摘要
     }
     return points.length > 0 ? points.join('\n') : '';
   }
