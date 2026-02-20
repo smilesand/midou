@@ -1,6 +1,6 @@
 {
   "name": "midou",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "midou（咪豆）— 一只拥有灵魂的 AI 伙伴，以我心爱的公狸花猫命名",
   "type": "module",
   "main": "src/index.js",
