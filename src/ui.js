@@ -326,6 +326,7 @@ export class BlessedUI {
       left: 1,
       width: '100%-4',
       height: 1,
+      tags: true,
       style: { fg: 'white', bg: 'default' },
     });
 
@@ -391,17 +392,21 @@ export class BlessedUI {
       return;
     }
 
+    // 回合制：AI 处理期间禁止所有输入操作
+    if (this._processing) return;
+
     if (key.name === 'enter' || key.name === 'return' || key.name === 'linefeed') {
       const value = this._inputValue.trim();
+      if (!value) return;
       this._inputValue = '';
       this._inputCursor = 0;
-      this._renderInput();
-      if (!value || this._processing) return;
       this._processing = true;
+      this._renderInput();
       this._doHandleInput(value).catch(err => {
         this.appendChat(`{red-fg}⚠  错误: ${blessed.escape(err.message)}{/red-fg}`);
       }).finally(() => {
         this._processing = false;
+        this._renderInput();
       });
       return;
     }
@@ -446,7 +451,11 @@ export class BlessedUI {
   }
 
   _renderInput() {
-    this.inputBox.setContent(this._inputValue);
+    if (this._processing) {
+      this.inputBox.setContent('{#888888-fg}⏳ 等待回复中…{/#888888-fg}');
+    } else {
+      this.inputBox.setContent(blessed.escape(this._inputValue));
+    }
     this.screen.render();
   }
 

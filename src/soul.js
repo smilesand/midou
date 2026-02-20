@@ -177,6 +177,13 @@ export function buildSystemPrompt(soulData, recentMemories = '', extensions = {}
 - 执行系统命令前，先告诉主人你打算做什么`);
   }
 
+  // 对话行为准则
+  parts.push(`=== 对话行为 ===
+- 每次回复结束时，给出明确的结束信号，让主人知道你已说完
+- 对于较长的回答：在末尾加一句简短的总结或询问，例如"以上就是…，还有什么想了解的吗？"
+- 对于简短的回答：可以用反问、建议或关心的话语自然收尾
+- 不要突然中断，确保每段回复都有完整的收束感`);
+
   // 技能
   if (extensions.skills && s.includeSkills) {
     parts.push(`=== 你的技能 ===\n${extensions.skills}`);
