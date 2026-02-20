@@ -288,13 +288,12 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
 
   // 设置输入回调
   ui.onSubmit(async (input) => {
-    ui.updateStatus({ status: '思考中…' });
     try {
       await engine.talk(input);
     } catch (error) {
       ui.appendChat(`{red-fg}⚠  出了点问题: ${error.message}{/red-fg}`);
+      ui.updateStatus({ status: '就绪' });
     }
-    ui.updateStatus({ status: '就绪' });
   });
 
   // 设置命令回调

@@ -53,8 +53,11 @@ export class StdoutOutputHandler {
     process.stdout.write(chalk.hex('#FFB347')(text));
   }
 
-  onTextComplete() {
+  onTextComplete(truncated = false) {
     process.stdout.write('\n');
+    if (truncated) {
+      process.stdout.write(chalk.yellow('  ⚠ 输出因 token 限制被截断，可使用 /mode full 切换到全能模式获取更长回复\n'));
+    }
   }
 
   onToolStart(name) {
@@ -205,6 +208,7 @@ export class ChatEngine {
 
             case 'message_complete':
               completeMessage = event.message;
+              completeMessage._stopReason = event.stopReason;
               break;
           }
         }
@@ -215,7 +219,8 @@ export class ChatEngine {
           if (fullResponse) {
             this.session.add('assistant', fullResponse);
           }
-          this.output.onTextComplete();
+          const truncated = completeMessage?._stopReason === 'max_tokens' || completeMessage?._stopReason === 'length';
+          this.output.onTextComplete(truncated);
           break;
         }
 

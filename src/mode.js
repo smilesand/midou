@@ -58,7 +58,7 @@ const MODES = {
     name: 'normal',
     label: '☀️ 标准',
     description: '平衡模式 — 完整提示词 + 全部工具',
-    maxTokens: 4096,
+    maxTokens: 8192,
     temperature: 0.7,
     prompt: {
       includeSoul: true,
@@ -88,7 +88,7 @@ const MODES = {
     name: 'full',
     label: '🔥 全能',
     description: '全能模式 — 深度上下文 + 大 token 预算 + 完整日记',
-    maxTokens: 8192,
+    maxTokens: 16384,
     temperature: 0.8,
     prompt: {
       includeSoul: true,

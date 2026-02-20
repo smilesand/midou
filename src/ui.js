@@ -89,11 +89,32 @@ export class BlessedOutputHandler {
     this._streamRenderer = null;
     this._thinkingLines = [];
     this._aiLines = [];
+    this._spinnerTimer = null;
+    this._spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    this._spinnerIdx = 0;
+  }
+
+  _startSpinner(label = '生成中') {
+    this._stopSpinner();
+    this._spinnerIdx = 0;
+    this.ui.updateStatus({ status: `${this._spinnerFrames[0]} ${label}` });
+    this._spinnerTimer = setInterval(() => {
+      this._spinnerIdx = (this._spinnerIdx + 1) % this._spinnerFrames.length;
+      this.ui.updateStatus({ status: `${this._spinnerFrames[this._spinnerIdx]} ${label}` });
+    }, 80);
+  }
+
+  _stopSpinner() {
+    if (this._spinnerTimer) {
+      clearInterval(this._spinnerTimer);
+      this._spinnerTimer = null;
+    }
   }
 
   onThinkingStart() {
     this._thinkingLines = [];
     this._thinkingLines.push('思考中…');
+    this._startSpinner('思考中');
   }
 
   onThinkingDelta(text) {
@@ -106,6 +127,7 @@ export class BlessedOutputHandler {
   }
 
   onThinkingEnd(fullText) {
+    this._stopSpinner();
     if (fullText) {
       this._thinkingLines.push(`── ${fullText.length} 字`);
       const bubble = makeBubble(
@@ -119,6 +141,7 @@ export class BlessedOutputHandler {
   }
 
   onThinkingHidden(length) {
+    this._stopSpinner();
     const bubble = makeBubble(`${length} 字 — /think 查看`, 'thinking');
     for (const line of bubble) this.ui.appendChat(line);
   }
@@ -126,27 +149,33 @@ export class BlessedOutputHandler {
   onTextDelta(text) {
     if (!this._streamRenderer) {
       this._aiLines = [];
+      this._startSpinner('生成中');
       this._streamRenderer = new IncrementalMDRenderer((rendered) => {
-        // 收集渲染后的行
         this._aiLines.push(blessed.escape(rendered));
-        // 实时输出：直接追加（后续 onTextComplete 不再重复）
         this.ui.appendChat(blessed.escape(rendered));
       });
     }
     this._streamRenderer.feed(text);
   }
 
-  onTextComplete() {
+  onTextComplete(truncated = false) {
+    this._stopSpinner();
     if (this._streamRenderer) {
       this._streamRenderer.flush();
       this._streamRenderer = null;
     }
+    if (truncated) {
+      this.ui.appendChat('{yellow-fg}⚠ 输出因 token 限制被截断，可用 /mode full 获取更长回复{/yellow-fg}');
+    }
+    this.ui.appendChat('{#555555-fg}── ✓ 完成 ──{/#555555-fg}');
     this.ui.appendChat('');
+    this.ui.updateStatus({ status: '就绪' });
   }
 
   onToolStart(name) {
     const isMCP = name.startsWith('mcp_');
     const icon = isMCP ? '🔌' : '⚙';
+    this._startSpinner(`执行 ${name}`);
     this.ui.appendChat(`{#7FDBFF-fg}┌─ ${icon} ${blessed.escape(name)}{/#7FDBFF-fg}`);
   }
 
@@ -160,17 +189,21 @@ export class BlessedOutputHandler {
   }
 
   onToolResult() {
+    this._stopSpinner();
     this.ui.appendChat('{#7FDBFF-fg}└─ {green-fg}✓{/green-fg}{/#7FDBFF-fg}');
     this.ui.appendChat('');
     this.ui.refreshTodoPanel();
   }
 
   onError(message) {
+    this._stopSpinner();
     const bubble = makeBubble(blessed.escape(message), 'system');
     for (const line of bubble) this.ui.appendChat(line);
+    this.ui.updateStatus({ status: '就绪' });
   }
 
   async confirmCommand(command) {
+    this._stopSpinner();
     return await this.ui.confirmCommand(command);
   }
 }
