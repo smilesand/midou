@@ -1,5 +1,15 @@
 <template>
   <div class="h-full flex flex-col bg-gray-50">
+    <div class="p-4 bg-white border-b border-gray-200 flex justify-between items-center">
+      <h2 class="text-lg font-semibold">Chat</h2>
+      <div class="flex items-center gap-2">
+        <label class="text-sm font-medium text-gray-700">Target Agent:</label>
+        <select v-model="selectedAgentId" class="border border-gray-300 rounded-md p-1 text-sm">
+          <option value="">Auto (First Agent)</option>
+          <option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+        </select>
+      </div>
+    </div>
     <div class="flex-1 overflow-y-auto p-4 space-y-4">
       <div v-for="(msg, index) in messages" :key="index" class="flex" :class="msg.role === 'user' ? 'justify-end' : 'justify-start'">
         <div class="max-w-[70%] rounded-lg p-3 shadow-sm" :class="msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white border border-gray-200'">
@@ -26,15 +36,19 @@ const messages = ref([
   { role: 'system', agent: 'System', content: 'Welcome to Midou Multi-Agent Chat!' }
 ])
 const inputMessage = ref('')
+const agents = ref([])
+const selectedAgentId = ref('')
 let socket = null
 let currentAssistantMessage = null
 
-onMounted(() => {
+onMounted(async () => {
+  await loadAgents()
+  
   socket = io('http://localhost:3000')
   
   socket.on('message_delta', (data) => {
     if (!currentAssistantMessage) {
-      currentAssistantMessage = { role: 'assistant', agent: 'Midou', content: '' }
+      currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '' }
       messages.value.push(currentAssistantMessage)
     }
     currentAssistantMessage.content = data.text
@@ -47,9 +61,9 @@ onMounted(() => {
     }
   })
 
-  socket.on('thinking_start', () => {
+  socket.on('thinking_start', (data) => {
     if (!currentAssistantMessage) {
-      currentAssistantMessage = { role: 'assistant', agent: 'Midou', content: '💭 Thinking...' }
+      currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '💭 Thinking...' }
       messages.value.push(currentAssistantMessage)
     }
   })
@@ -65,6 +79,16 @@ onMounted(() => {
   })
 })
 
+const loadAgents = async () => {
+  try {
+    const res = await fetch('http://localhost:3000/api/system')
+    const data = await res.json()
+    agents.value = data.agents || []
+  } catch (error) {
+    console.error('Failed to load agents:', error)
+  }
+}
+
 const renderMarkdown = (text) => {
   return marked(text || '')
 }
@@ -74,7 +98,8 @@ const sendMessage = () => {
   
   const msg = {
     role: 'user',
-    content: inputMessage.value
+    content: inputMessage.value,
+    targetAgentId: selectedAgentId.value || null
   }
   
   messages.value.push(msg)

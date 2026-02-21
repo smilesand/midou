@@ -12,7 +12,7 @@
  */
 
 import chalk from 'chalk';
-import { chat, chatStreamWithTools } from './llm.js';
+import { chatSync, chatStreamWithTools } from './llm.js';
 import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory, logConversation } from './memory.js';
