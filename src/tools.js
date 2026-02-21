@@ -454,6 +454,11 @@ const DANGEROUS_PATTERNS = [
  * 检查命令是否安全
  */
 function isSafeCommand(command) {
+  // 拦截 sudo 和 su，防止 AI 索要密码
+  if (/^(sudo|su)\s+/.test(command.trim())) {
+    return 'SUDO_BLOCKED';
+  }
+
   for (const pattern of DANGEROUS_PATTERNS) {
     if (pattern.test(command)) return false;
   }
@@ -569,7 +574,10 @@ export async function executeTool(name, args) {
 
     // ── 系统级工具 ──
     case 'run_command': {
-      if (!isSafeCommand(args.command)) {
+      const safeCheck = isSafeCommand(args.command);
+      if (safeCheck === 'SUDO_BLOCKED') {
+        return '⚠️ 该命令需要管理员权限。出于安全考虑，绝对禁止向用户索要密码。请直接将需要执行的命令输出给用户，让用户自己在一个安全的终端中手动执行。';
+      } else if (!safeCheck) {
         return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知主人手动操作。';
       }
       const result = await runShellCommand(args.command, {

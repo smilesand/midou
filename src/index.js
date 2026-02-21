@@ -298,10 +298,10 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
 
   // 设置命令回调
   ui.onCommand(async (input) => {
-    const lowerInput = input.toLowerCase();
-    const cmdParts = lowerInput.split(/\s+/);
-    const cmd = cmdParts[0];
-    const cmdArg = cmdParts[1] || '';
+    const cmdParts = input.split(/\s+/);
+    const cmd = cmdParts[0].toLowerCase();
+    const cmdArg = cmdParts[1] ? cmdParts[1].toLowerCase() : '';
+    const fullArgs = cmdParts.slice(1).join(' ');
 
     switch (cmd) {
       case '/quit':
@@ -380,6 +380,41 @@ async function startWithUI(systemPrompt, soulData, isFirstBoot) {
       }
 
       case '/mcp': {
+        if (cmdArg === 'install') {
+          if (!fullArgs) {
+            ui.showSystemMessage('❌ 请提供 MCP 地址，例如: /mcp install <url>');
+            return;
+          }
+          ui.showSystemMessage(`🔌 正在安排安装 MCP: ${fullArgs}`);
+          const prompt = `请帮我安装这个 MCP: ${fullArgs}。
+请将其安装到我的 soul 文件夹（${MIDOU_HOME}）的 mcp 文件夹中。
+如果它是一个 npm 包，你可以直接在 ${MIDOU_HOME}/mcp.json 中配置 npx 命令，或者在 mcp 文件夹中初始化一个 package.json 并安装它。
+如果它是一个 git 仓库，请 clone 到 ${MIDOU_HOME}/mcp 目录下，执行 npm install 和 npm run build，然后将启动命令配置到 ${MIDOU_HOME}/mcp.json 中。
+mcp.json 的格式如下：
+{
+  "mcpServers": {
+    "server-name": {
+      "command": "node",
+      "args": ["/path/to/build/index.js"],
+      "env": {}
+    }
+  }
+}
+注意：请先读取 ${MIDOU_HOME}/mcp.json，将新的 MCP 服务追加到 mcpServers 对象中，然后再写回文件，不要覆盖原有的其他服务。如果 mcp.json 不存在，请直接创建它。
+配置完成后，请告诉我，并提醒我使用 /mcp reload 命令重新加载 MCP 服务。`;
+          await engine.talk(prompt);
+          return;
+        }
+
+        if (cmdArg === 'reload') {
+          ui.showSystemMessage('🔌 正在重新加载 MCP 服务...');
+          const { disconnectAll, connectMCPServers } = await import('./mcp.js');
+          disconnectAll();
+          await connectMCPServers();
+          ui.showSystemMessage('✅ MCP 服务已重新加载');
+          return;
+        }
+
         const mcpSt = getMCPStatus();
         ui.appendChat('');
         ui.appendChat('{#FFD700-fg}🔌 MCP 扩展{/#FFD700-fg}');
@@ -592,10 +627,10 @@ async function startWithReadline(systemPrompt, soulData, isFirstBoot) {
 
     // 处理特殊命令
     if (input.startsWith('/')) {
-      const lowerInput = input.toLowerCase();
-      const cmdParts = lowerInput.split(/\s+/);
-      const cmd = cmdParts[0];
-      const cmdArg = cmdParts[1] || '';
+      const cmdParts = input.split(/\s+/);
+      const cmd = cmdParts[0].toLowerCase();
+      const cmdArg = cmdParts[1] ? cmdParts[1].toLowerCase() : '';
+      const fullArgs = cmdParts.slice(1).join(' ');
 
       switch (cmd) {
         case '/quit':
@@ -686,6 +721,44 @@ async function startWithReadline(systemPrompt, soulData, isFirstBoot) {
         }
 
         case '/mcp': {
+          if (cmdArg === 'install') {
+            if (!fullArgs) {
+              console.log(chalk.red('  ❌ 请提供 MCP 地址，例如: /mcp install <url>'));
+              rl.prompt();
+              return;
+            }
+            console.log(chalk.hex('#FFD700')(`  🔌 正在安排安装 MCP: ${fullArgs}`));
+            const prompt = `请帮我安装这个 MCP: ${fullArgs}。
+请将其安装到我的 soul 文件夹（${MIDOU_HOME}）的 mcp 文件夹中。
+如果它是一个 npm 包，你可以直接在 ${MIDOU_HOME}/mcp.json 中配置 npx 命令，或者在 mcp 文件夹中初始化一个 package.json 并安装它。
+如果它是一个 git 仓库，请 clone 到 ${MIDOU_HOME}/mcp 目录下，执行 npm install 和 npm run build，然后将启动命令配置到 ${MIDOU_HOME}/mcp.json 中。
+mcp.json 的格式如下：
+{
+  "mcpServers": {
+    "server-name": {
+      "command": "node",
+      "args": ["/path/to/build/index.js"],
+      "env": {}
+    }
+  }
+}
+注意：请先读取 ${MIDOU_HOME}/mcp.json，将新的 MCP 服务追加到 mcpServers 对象中，然后再写回文件，不要覆盖原有的其他服务。如果 mcp.json 不存在，请直接创建它。
+配置完成后，请告诉我，并提醒我使用 /mcp reload 命令重新加载 MCP 服务。`;
+            await engine.talk(prompt);
+            rl.prompt();
+            return;
+          }
+
+          if (cmdArg === 'reload') {
+            console.log(chalk.hex('#FFD700')('  🔌 正在重新加载 MCP 服务...'));
+            const { disconnectAll, connectMCPServers } = await import('./mcp.js');
+            disconnectAll();
+            await connectMCPServers();
+            console.log(chalk.green('  ✅ MCP 服务已重新加载'));
+            rl.prompt();
+            return;
+          }
+
           const mcpStatus = getMCPStatus();
           console.log('');
           console.log(chalk.hex('#FFD700').bold('  🔌 MCP 扩展'));
