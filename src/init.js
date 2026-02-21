@@ -23,9 +23,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { MIDOU_COMPANY_DIR, MIDOU_AGENT_DIR } from '../midou.config.js';
 
 // ── midou 的灵魂之家 ──────────────────────────────
-export const MIDOU_SOUL_DIR = process.env.MIDOU_SOUL_DIR || path.join(os.homedir(), '.midou');
+export const MIDOU_SOUL_DIR = MIDOU_AGENT_DIR;
 
 /**
  * 默认模板文件 — 新灵魂的种子
@@ -196,13 +197,41 @@ export async function isInitialized() {
  * 初始化灵魂之家 — 只创建不存在的文件，不覆盖已有的（保护进化后的灵魂）
  */
 export async function initSoulDir() {
-  // 创建根目录和子目录
-  await fs.mkdir(path.join(MIDOU_SOUL_DIR, 'memory'), { recursive: true });
-  await fs.mkdir(path.join(MIDOU_SOUL_DIR, 'skills'), { recursive: true });
+  // 1. 初始化公司总部公共空间
+  await fs.mkdir(path.join(MIDOU_COMPANY_DIR, 'assets'), { recursive: true });
+  await fs.mkdir(path.join(MIDOU_COMPANY_DIR, 'communication'), { recursive: true });
+  
+  // 初始化公司花名册
+  const rosterPath = path.join(MIDOU_COMPANY_DIR, 'company.json');
+  try {
+    await fs.access(rosterPath);
+  } catch {
+    const defaultRoster = {
+      agents: {
+        manager: { role: "项目经理", description: "负责与用户沟通，拆解需求，分发任务给其他 Agent，并汇总结果。" },
+        researcher: { role: "研究员", description: "擅长使用浏览器工具搜索资料，撰写调研报告。" },
+        coder: { role: "程序员", description: "擅长编写代码、执行终端命令、修复 Bug。" }
+      }
+    };
+    await fs.writeFile(rosterPath, JSON.stringify(defaultRoster, null, 2), 'utf-8');
+  }
+
+  // 初始化全局 .env
+  const globalEnvPath = path.join(MIDOU_COMPANY_DIR, '.env');
+  try {
+    await fs.access(globalEnvPath);
+  } catch {
+    await fs.writeFile(globalEnvPath, TEMPLATES['.env'], 'utf-8');
+  }
+
+  // 2. 初始化当前 Agent 的私密工位
+  await fs.mkdir(path.join(MIDOU_AGENT_DIR, 'memory'), { recursive: true });
+  await fs.mkdir(path.join(MIDOU_AGENT_DIR, 'skills'), { recursive: true });
+  await fs.mkdir(path.join(MIDOU_AGENT_DIR, 'workspace'), { recursive: true });
 
   // 写入模板，跳过已存在的文件
   for (const [filename, content] of Object.entries(TEMPLATES)) {
-    const filePath = path.join(MIDOU_SOUL_DIR, filename);
+    const filePath = path.join(MIDOU_AGENT_DIR, filename);
     try {
       await fs.access(filePath);
       // 文件已存在，跳过（尊重已有的灵魂和记忆）
@@ -213,45 +242,63 @@ export async function initSoulDir() {
 }
 
 /**
- * 从旧的 workspace/ 目录迁移到 ~/.midou/（一次性）
+ * 从旧的 workspace/ 目录或旧的 ~/.midou/ 根目录迁移到 ~/.midou/agents/manager/（一次性）
  */
 export async function migrateFromWorkspace(oldWorkspacePath) {
-  try {
-    await fs.access(oldWorkspacePath);
-  } catch {
-    return false; // 没有旧工作区，无需迁移
-  }
-
-  const files = await fs.readdir(oldWorkspacePath);
   let migrated = 0;
 
-  for (const file of files) {
-    const src = path.join(oldWorkspacePath, file);
-    const dest = path.join(MIDOU_SOUL_DIR, file);
-    const stat = await fs.stat(src);
+  // 1. 尝试从旧的 npm 包 workspace/ 目录迁移
+  try {
+    await fs.access(oldWorkspacePath);
+    const files = await fs.readdir(oldWorkspacePath);
+    for (const file of files) {
+      const src = path.join(oldWorkspacePath, file);
+      const dest = path.join(MIDOU_AGENT_DIR, file);
+      const stat = await fs.stat(src);
 
-    if (stat.isDirectory() && file === 'memory') {
-      // 迁移 memory 目录
-      const memFiles = await fs.readdir(src);
-      await fs.mkdir(dest, { recursive: true });
-      for (const mf of memFiles) {
-        const mSrc = path.join(src, mf);
-        const mDest = path.join(dest, mf);
-        try {
-          await fs.access(mDest);
-        } catch {
-          await fs.copyFile(mSrc, mDest);
-          migrated++;
+      if (stat.isDirectory() && file === 'memory') {
+        const memFiles = await fs.readdir(src);
+        await fs.mkdir(dest, { recursive: true });
+        for (const mf of memFiles) {
+          const mSrc = path.join(src, mf);
+          const mDest = path.join(dest, mf);
+          try { await fs.access(mDest); } catch { await fs.copyFile(mSrc, mDest); migrated++; }
         }
-      }
-    } else if (stat.isFile() && file.endsWith('.md')) {
-      try {
-        await fs.access(dest);
-      } catch {
-        await fs.copyFile(src, dest);
-        migrated++;
+      } else if (stat.isFile() && file.endsWith('.md')) {
+        try { await fs.access(dest); } catch { await fs.copyFile(src, dest); migrated++; }
       }
     }
+  } catch {
+    // 没有旧的 npm 包工作区
+  }
+
+  // 2. 尝试从旧的 ~/.midou/ 根目录迁移到 ~/.midou/agents/manager/
+  try {
+    const rootFiles = await fs.readdir(MIDOU_COMPANY_DIR);
+    await fs.mkdir(MIDOU_AGENT_DIR, { recursive: true });
+    for (const file of rootFiles) {
+      if (file === 'agents' || file === 'assets' || file === 'communication' || file === 'company.json' || file === '.env') continue;
+      
+      const src = path.join(MIDOU_COMPANY_DIR, file);
+      const dest = path.join(MIDOU_AGENT_DIR, file);
+      const stat = await fs.stat(src);
+
+      if (stat.isDirectory() && (file === 'memory' || file === 'skills' || file === 'workspace' || file === 'mcp')) {
+        await fs.mkdir(dest, { recursive: true });
+        const subFiles = await fs.readdir(src);
+        for (const sf of subFiles) {
+          const sSrc = path.join(src, sf);
+          const sDest = path.join(dest, sf);
+          try { await fs.access(sDest); } catch { await fs.rename(sSrc, sDest); migrated++; }
+        }
+        // 尝试删除旧目录
+        try { await fs.rmdir(src); } catch {}
+      } else if (stat.isFile() && (file.endsWith('.md') || file.endsWith('.json'))) {
+        try { await fs.access(dest); } catch { await fs.rename(src, dest); migrated++; }
+      }
+    }
+  } catch {
+    // 忽略错误
   }
 
   return migrated > 0;

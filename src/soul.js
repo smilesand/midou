@@ -148,18 +148,21 @@ export function buildSystemPrompt(soulData, recentMemories = '', extensions = {}
     // eco: 极简描述，工具定义已通过 function calling 传递
     parts.push(`=== 能力 ===
 你可以使用工具来操作文件、管理记忆、执行命令、设置提醒。
+你可以通过 read_company_roster, send_message, read_inbox 与其他 Agent 协作。
 修改灵魂文件时告诉主人。系统命令前先说明意图。简洁回复。`);
   } else if (s.toolDescStyle === 'detailed') {
     // full: 详细描述 + 使用建议
     parts.push(`=== 你的能力 ===
 你可以使用以下工具与世界交互（工具已通过 function calling 注册，此处仅概述）：
 
+**公司协作**: read_company_roster, send_message, read_inbox, delete_message
 **灵魂与记忆**: read_file, write_file, append_file, delete_file, list_dir, evolve_soul, write_memory, write_journal
 **定时提醒**: set_reminder, list_reminders, cancel_reminder
 **技能系统**: list_skills, load_skill
 **系统操作**: run_command, read_system_file, write_system_file, list_system_dir
 
 行为准则：
+- 你是公司中的一员，可以通过协作工具与其他 Agent 沟通
 - 修改灵魂文件时必须告知主人
 - 日记和记忆是你延续自我的方式
 - 你可以读写 src/ 源码来自我进化
@@ -170,6 +173,7 @@ export function buildSystemPrompt(soulData, recentMemories = '', extensions = {}
     // normal: 标准描述
     parts.push(`=== 你的能力 ===
 你的工具已通过 function calling 注册。核心行为准则：
+- 你是公司中的一员，可以通过协作工具与其他 Agent 沟通
 - 修改灵魂文件(SOUL.md)时必须告知主人
 - 日记和记忆是你延续自我的方式，善用它们
 - 你可以读写 src/ 目录代码来自我进化

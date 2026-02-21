@@ -22,7 +22,7 @@ import { buildSkillsPrompt, discoverSkills } from './skills.js';
 import { connectMCPServers, hasMCPConfig, buildMCPPrompt } from './mcp.js';
 import { formatReminders } from './scheduler.js';
 import { initMode, getPromptStrategy } from './mode.js';
-import config, { MIDOU_HOME } from '../midou.config.js';
+import config, { MIDOU_AGENT_DIR } from '../midou.config.js';
 
 /**
  * midou 醒来
@@ -106,7 +106,7 @@ export async function wakeUp() {
   console.log(ruler);
   console.log(chalk.dim('  大脑  ') + chalk.cyan(`${config.llm.model}`) + chalk.dim(` via ${providerLabel}`));
   console.log(chalk.dim('  模式  ') + chalk.cyan(mode.label));
-  console.log(chalk.dim('  之家  ') + chalk.cyan(MIDOU_HOME));
+  console.log(chalk.dim('  之家  ') + chalk.cyan(MIDOU_AGENT_DIR));
   console.log(ruler);
   console.log('');
 

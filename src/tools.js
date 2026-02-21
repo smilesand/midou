@@ -19,13 +19,98 @@ import { addLongTermMemory, writeJournal } from './memory.js';
 import { addReminder, removeReminder, formatReminders } from './scheduler.js';
 import { loadSkillContent, listSkillNames } from './skills.js';
 import { isMCPTool, executeMCPTool } from './mcp.js';
-import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './ui.js';
-import { MIDOU_HOME } from '../midou.config.js';
+import { MIDOU_AGENT_DIR, MIDOU_COMPANY_DIR } from '../midou.config.js';
+
+let todoItems = [];
+
+export function addTodoItem(title) {
+  const id = todoItems.length + 1;
+  todoItems.push({ id, title, status: 'pending' });
+  return id;
+}
+
+export function updateTodoStatus(id, status) {
+  const item = todoItems.find(t => t.id === id);
+  if (item) {
+    item.status = status;
+    return true;
+  }
+  return false;
+}
+
+export function getTodoItems() {
+  return todoItems;
+}
+
+export function clearTodoItems() {
+  todoItems = [];
+}
 
 /**
  * 工具定义（OpenAI Function Calling 格式）
  */
 export const toolDefinitions = [
+  // ── 公司协作与通信 ──────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'read_company_roster',
+      description: '读取公司花名册，了解公司里有哪些 Agent，以及他们各自的角色和能力。',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_message',
+      description: '给公司里的其他 Agent 发送消息或派发任务。',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: {
+            type: 'string',
+            description: '目标 Agent 的名字（如 coder, researcher）',
+          },
+          message: {
+            type: 'string',
+            description: '消息内容或任务描述',
+          },
+        },
+        required: ['to', 'message'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_inbox',
+      description: '读取自己的收件箱，查看其他 Agent 发来的消息或任务。',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_message',
+      description: '处理完消息后，从收件箱中删除该消息。',
+      parameters: {
+        type: 'object',
+        properties: {
+          msgId: {
+            type: 'string',
+            description: '消息 ID（文件名，如 1708523456789.json）',
+          },
+        },
+        required: ['msgId'],
+      },
+    },
+  },
   // ── 灵魂 / 工作区文件操作 ──────────────────────────
   {
     type: 'function',
@@ -185,7 +270,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'set_reminder',
-      description: '设置定时任务。支持：一次性(N分钟后触发并自动删除)、间隔重复(每N分钟)、每天/每周/每月固定时间(永久保存，重启后自动加载)。',
+      description: '设置定时任务。使用 cron 表达式。',
       parameters: {
         type: 'object',
         properties: {
@@ -193,29 +278,12 @@ export const toolDefinitions = [
             type: 'string',
             description: '提醒内容，例如"该休息一下了"',
           },
-          reminder_type: {
+          cron_expression: {
             type: 'string',
-            enum: ['once', 'interval', 'daily', 'weekly', 'monthly'],
-            description: '任务类型。once=一次性(触发后删除)，interval=每隔N分钟重复，daily=每天固定时间，weekly=每周固定时间，monthly=每月固定时间',
-          },
-          interval_minutes: {
-            type: 'number',
-            description: 'once/interval 类型的分钟数。例如 20 表示 20 分钟后或每 20 分钟',
-          },
-          time: {
-            type: 'string',
-            description: 'daily/weekly/monthly 类型的触发时间，格式 HH:MM，例如"09:00"',
-          },
-          weekday: {
-            type: 'number',
-            description: 'weekly 类型的星期几（0=周日，1=周一，...，6=周六）',
-          },
-          day: {
-            type: 'number',
-            description: 'monthly 类型的日期（1-31）',
+            description: 'cron 表达式，例如 "0 9 * * *" 表示每天早上 9 点',
           },
         },
-        required: ['text', 'reminder_type'],
+        required: ['text', 'cron_expression'],
       },
     },
   },
@@ -503,6 +571,67 @@ export async function executeTool(name, args, context = {}) {
   }
 
   switch (name) {
+    // ── 公司协作与通信 ──
+    case 'read_company_roster': {
+      try {
+        const rosterPath = path.join(MIDOU_COMPANY_DIR, 'company.json');
+        const content = await fs.readFile(rosterPath, 'utf-8');
+        return content;
+      } catch (e) {
+        return '无法读取公司花名册。';
+      }
+    }
+
+    case 'send_message': {
+      try {
+        const targetInbox = path.join(MIDOU_COMPANY_DIR, 'communication', `inbox_${args.to}`);
+        await fs.mkdir(targetInbox, { recursive: true });
+        const msgId = Date.now().toString();
+        const msgPath = path.join(targetInbox, `${msgId}.json`);
+        const msgData = {
+          from: path.basename(MIDOU_AGENT_DIR), // 当前 Agent 的名字
+          timestamp: new Date().toISOString(),
+          message: args.message
+        };
+        await fs.writeFile(msgPath, JSON.stringify(msgData, null, 2), 'utf-8');
+        return `消息已成功发送给 ${args.to}。`;
+      } catch (e) {
+        return `发送消息失败: ${e.message}`;
+      }
+    }
+
+    case 'read_inbox': {
+      try {
+        const myName = path.basename(MIDOU_AGENT_DIR);
+        const myInbox = path.join(MIDOU_COMPANY_DIR, 'communication', `inbox_${myName}`);
+        await fs.mkdir(myInbox, { recursive: true });
+        const files = await fs.readdir(myInbox);
+        if (files.length === 0) return '收件箱为空。';
+        
+        let inboxContent = '';
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            const content = await fs.readFile(path.join(myInbox, file), 'utf-8');
+            inboxContent += `[消息 ID: ${file}]\n${content}\n\n`;
+          }
+        }
+        return inboxContent;
+      } catch (e) {
+        return `读取收件箱失败: ${e.message}`;
+      }
+    }
+
+    case 'delete_message': {
+      try {
+        const myName = path.basename(MIDOU_AGENT_DIR);
+        const msgPath = path.join(MIDOU_COMPANY_DIR, 'communication', `inbox_${myName}`, args.msgId);
+        await fs.unlink(msgPath);
+        return `消息 ${args.msgId} 已删除。`;
+      } catch (e) {
+        return `删除消息失败: ${e.message}`;
+      }
+    }
+
     // ── 灵魂/工作区文件 ──
     case 'read_file': {
       const content = await readFile(args.path);
@@ -548,16 +677,8 @@ export async function executeTool(name, args, context = {}) {
 
     // ── 定时任务 ──
     case 'set_reminder': {
-      const rType = args.reminder_type || 'once';
-      const reminder = await addReminder(args.text, {
-        type: rType,
-        intervalMinutes: args.interval_minutes,
-        time: args.time,
-        weekday: args.weekday,
-        day: args.day,
-      });
-      const typeLabels = { once: '一次性', interval: `每 ${reminder.intervalMinutes} 分钟`, daily: `每天 ${reminder.time}`, weekly: `每周 ${reminder.time}`, monthly: `每月 ${reminder.time}` };
-      return `已设置任务 [${reminder.id}]: "${reminder.text}" (${typeLabels[reminder.type] || reminder.type})，下次触发: ${reminder.nextTrigger}`;
+      const id = await addReminder(args.cron_expression, args.text);
+      return `已设置任务 [${id}]: "${args.text}" (cron: ${args.cron_expression})`;
     }
 
     case 'list_reminders': {

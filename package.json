@@ -15,11 +15,10 @@
   ],
   "scripts": {
     "start": "node src/index.js",
-    "start:classic": "node src/index.js --no-ui",
-    "chat": "node src/index.js chat",
-    "heartbeat": "node src/index.js heartbeat",
-    "evolve": "node src/index.js evolve",
-    "init": "node src/index.js init"
+    "dev:backend": "node src/index.js",
+    "dev:frontend": "cd web && npm run dev",
+    "dev": "npm run dev:backend & npm run dev:frontend",
+    "build": "cd web && npm run build"
   },
   "keywords": [
     "ai",
@@ -35,15 +34,18 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.77.0",
-    "blessed": "^0.1.81",
     "chalk": "^5.4.1",
+    "cors": "^2.8.6",
     "dayjs": "^1.11.13",
     "dotenv": "^16.4.7",
+    "express": "^5.2.1",
     "inquirer": "^12.3.2",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
+    "node-cron": "^4.2.1",
     "node-notifier": "^10.0.1",
     "openai": "^4.80.0",
-    "ora": "^8.1.1"
+    "ora": "^8.1.1",
+    "socket.io": "^4.8.3"
   }
 }

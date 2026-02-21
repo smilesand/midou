@@ -10,12 +10,21 @@ import dotenv from 'dotenv';
 const __filename = fileURLToPath(import.meta.url);
 export const MIDOU_PKG = path.dirname(__filename);
 
-// MIDOU_HOME — 灵魂之家（灵魂 / 记忆 / 配置）
-// 默认 ~/.midou/，可通过 MIDOU_SOUL_DIR 环境变量自定义
-export const MIDOU_HOME = process.env.MIDOU_SOUL_DIR || path.join(os.homedir(), '.midou');
+// MIDOU_COMPANY_DIR — 公司总部（公共资产 / 通信总线 / 全局配置）
+// 默认 ~/.midou/，可通过 MIDOU_COMPANY_DIR 环境变量自定义
+export const MIDOU_COMPANY_DIR = process.env.MIDOU_COMPANY_DIR || path.join(os.homedir(), '.midou');
 
-// 先从灵魂之家加载 .env，再读取 process.env
-dotenv.config({ path: path.join(MIDOU_HOME, '.env') });
+// MIDOU_AGENT_DIR — 当前 Agent 的私密工位（灵魂 / 记忆 / 私有配置）
+// 默认 ~/.midou/agents/manager/，可通过 MIDOU_AGENT_DIR 环境变量自定义
+export const MIDOU_AGENT_DIR = process.env.MIDOU_AGENT_DIR || path.join(MIDOU_COMPANY_DIR, 'agents', 'manager');
+
+// 为了兼容旧代码，保留 MIDOU_HOME 指向当前 Agent 的工位
+export const MIDOU_HOME = MIDOU_AGENT_DIR;
+
+// 先从公司总部加载全局 .env
+dotenv.config({ path: path.join(MIDOU_COMPANY_DIR, '.env') });
+// 再从 Agent 工位加载私有 .env（覆盖全局）
+dotenv.config({ path: path.join(MIDOU_AGENT_DIR, '.env'), override: true });
 
 export default {
   // AI 模型配置
@@ -63,14 +72,21 @@ export default {
     autoFlush: true,
   },
 
-  // 工作区路径（灵魂之家）
+  // 工作区路径（当前 Agent 的私密工位）
   workspace: {
-    root: MIDOU_HOME,
+    root: MIDOU_AGENT_DIR,
+  },
+
+  // 公司总部路径（公共资产 / 通信总线）
+  company: {
+    root: MIDOU_COMPANY_DIR,
+    assets: path.join(MIDOU_COMPANY_DIR, 'assets'),
+    communication: path.join(MIDOU_COMPANY_DIR, 'communication'),
   },
 
   // midou 包的安装位置（源码位置，用于自我进化）
   pkg: MIDOU_PKG,
 
-  // midou 的灵魂之家路径
-  home: MIDOU_HOME,
+  // 兼容旧代码
+  home: MIDOU_AGENT_DIR,
 };
