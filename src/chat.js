@@ -12,7 +12,7 @@
  */
 
 import chalk from 'chalk';
-import { chatSync, chatStreamWithTools } from './llm.js';
+import { LLMClient } from './llm.js';
 import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory, logConversation } from './memory.js';
@@ -119,8 +119,9 @@ export class ChatEngine {
   /**
    * @param {string} systemPrompt - 系统提示词
    * @param {object} outputHandler - 输出处理器（默认 stdout）
+   * @param {object} llmConfig - LLM 配置
    */
-  constructor(systemPrompt, outputHandler = null) {
+  constructor(systemPrompt, outputHandler = null, llmConfig = {}) {
     this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
@@ -128,6 +129,7 @@ export class ChatEngine {
     this.lastThinking = '';
     this.output = outputHandler || new StdoutOutputHandler();
     this.isBusy = false;
+    this.llmClient = new LLMClient(llmConfig);
   }
 
   setOutputHandler(handler) {
@@ -198,7 +200,7 @@ export class ChatEngine {
       let thinkingText = '';
 
       try {
-        for await (const event of chatStreamWithTools(messages, tools)) {
+        for await (const event of this.llmClient.chatStreamWithTools(messages, tools)) {
           switch (event.type) {
             case 'thinking_start':
               if (this.showThinking) {

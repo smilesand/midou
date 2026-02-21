@@ -46,6 +46,7 @@
     "node-notifier": "^10.0.1",
     "openai": "^4.80.0",
     "ora": "^8.1.1",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
   }
 }

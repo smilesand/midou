@@ -34,8 +34,14 @@ export class SystemManager {
         this.agents.set(agent.id, agent);
 
         // Setup cron if configured
-        if (agentConfig.data?.cron) {
-          this.setupCronJob(agent.id, agentConfig.data.cron);
+        if (agentConfig.data?.cronJobs && Array.isArray(agentConfig.data.cronJobs)) {
+          for (const job of agentConfig.data.cronJobs) {
+            if (job.expression) {
+              this.setupCronJob(agent.id, job.expression, job.prompt);
+            }
+          }
+        } else if (agentConfig.data?.cron) {
+          this.setupCronJob(agent.id, agentConfig.data.cron, 'System: Scheduled activation triggered.');
         }
       }
       console.log(`System loaded with ${this.agents.size} agents and ${this.connections.length} connections.`);
@@ -46,7 +52,7 @@ export class SystemManager {
     }
   }
 
-  setupCronJob(agentId, cronExpression) {
+  setupCronJob(agentId, cronExpression, prompt) {
     if (!cron.validate(cronExpression)) {
       console.error(`Invalid cron expression for agent ${agentId}: ${cronExpression}`);
       return;
@@ -56,16 +62,21 @@ export class SystemManager {
       const agent = this.agents.get(agentId);
       if (agent) {
         console.log(`[Cron] Triggering agent ${agentId}`);
-        agent.talk('System: Scheduled activation triggered.');
+        agent.talk(prompt || 'System: Scheduled activation triggered.');
       }
     });
 
-    this.cronJobs.set(agentId, job);
+    if (!this.cronJobs.has(agentId)) {
+      this.cronJobs.set(agentId, []);
+    }
+    this.cronJobs.get(agentId).push(job);
   }
 
   stopAllCronJobs() {
-    for (const job of this.cronJobs.values()) {
-      job.stop();
+    for (const jobs of this.cronJobs.values()) {
+      for (const job of jobs) {
+        job.stop();
+      }
     }
     this.cronJobs.clear();
   }
@@ -86,10 +97,29 @@ export class SystemManager {
 
       // Check condition if any
       let shouldRoute = true;
-      if (conn.data?.condition) {
+      
+      if (conn.data?.conditions && Array.isArray(conn.data.conditions) && conn.data.conditions.length > 0) {
+        shouldRoute = false; // If there are conditions, at least one must match
+        for (const cond of conn.data.conditions) {
+          try {
+            if (cond.type === 'contains' && cond.value) {
+              if (message.includes(cond.value)) {
+                shouldRoute = true;
+                break;
+              }
+            } else if (cond.type === 'regex' && cond.value) {
+              const regex = new RegExp(cond.value);
+              if (regex.test(message)) {
+                shouldRoute = true;
+                break;
+              }
+            }
+          } catch (e) {
+            console.error(`Error evaluating condition for connection ${conn.id}:`, e);
+          }
+        }
+      } else if (conn.data?.condition) {
         try {
-          // Simple condition evaluation: check if message contains the condition string
-          // In a real system, this could be a regex or an LLM evaluation
           shouldRoute = message.includes(conn.data.condition);
         } catch (e) {
           console.error(`Error evaluating condition for connection ${conn.id}:`, e);

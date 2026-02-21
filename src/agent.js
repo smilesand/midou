@@ -24,8 +24,15 @@ export class Agent {
     // Build prompt based on config
     const systemPrompt = this.config.systemPrompt || `You are ${this.name}, an AI assistant.`;
     
+    const llmConfig = {
+      provider: this.config.provider || undefined,
+      model: this.config.model || undefined,
+      apiKey: this.config.apiKey || undefined,
+      baseURL: this.config.baseURL || undefined,
+    };
+
     // Initialize ChatEngine
-    this.engine = new ChatEngine(systemPrompt);
+    this.engine = new ChatEngine(systemPrompt, null, llmConfig);
     
     // Override output handler to route messages through SystemManager
     this.engine.setOutputHandler({
