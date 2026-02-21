@@ -88,6 +88,34 @@ export class StdoutOutputHandler {
     console.error(chalk.yellow(`  ⚠  ${message}`));
   }
 
+  async askSecret(message) {
+    const readline = await import('readline');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    // Hack to hide password
+    rl._writeToOutput = function _writeToOutput(stringToWrite) {
+      if (rl.stdoutMuted)
+        rl.output.write("*");
+      else
+        rl.output.write(stringToWrite);
+    };
+
+    return new Promise((resolve) => {
+      console.log('');
+      console.log(chalk.magenta.bold('  🔐 安全输入'));
+      rl.question(chalk.dim(`  ${message}: `), (answer) => {
+        rl.stdoutMuted = false;
+        rl.close();
+        console.log('');
+        resolve(answer.trim() || null);
+      });
+      rl.stdoutMuted = true;
+    });
+  }
+
   async confirmCommand(command) {
     // readline 模式也需要用户确认命令
     const readline = await import('readline');
@@ -309,7 +337,7 @@ export class ChatEngine {
 
           let result;
           try {
-            result = await executeTool(tc.function.name, args);
+            result = await executeTool(tc.function.name, args, { output: this.output });
             this.output.onToolResult();
           } catch (e) {
             result = `工具执行出错: ${e.message}`;

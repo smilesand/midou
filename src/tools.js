@@ -20,6 +20,7 @@ import { addReminder, removeReminder, formatReminders } from './scheduler.js';
 import { loadSkillContent, listSkillNames } from './skills.js';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './ui.js';
+import { MIDOU_HOME } from '../midou.config.js';
 
 /**
  * 工具定义（OpenAI Function Calling 格式）
@@ -283,6 +284,36 @@ export const toolDefinitions = [
   {
     type: 'function',
     function: {
+      name: 'request_secret_input',
+      description: '当需要用户输入敏感信息（如 API Key、密码）时使用此工具。它会弹出一个安全的输入框，用户输入的内容不会出现在聊天记录中，而是直接写入到指定的配置文件中。',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: '提示用户输入的信息，例如 "请输入 Brave Search API Key"',
+          },
+          target: {
+            type: 'string',
+            description: '保存目标：env (保存到 .env 文件) 或 mcp (保存到 mcp.json)',
+            enum: ['env', 'mcp'],
+          },
+          keyName: {
+            type: 'string',
+            description: '环境变量名或 JSON 键名，例如 BRAVE_API_KEY',
+          },
+          mcpServerName: {
+            type: 'string',
+            description: '如果 target 是 mcp，则必须提供对应的 MCP 服务器名称',
+          },
+        },
+        required: ['message', 'target', 'keyName'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'run_command',
       description: '在系统终端中执行 shell 命令。可以用来整理文件、安装软件、查看系统信息、运行脚本等。注意：危险命令（如 rm -rf /）会被拦截。',
       parameters: {
@@ -488,7 +519,7 @@ function runShellCommand(command, options = {}) {
 /**
  * 执行工具调用
  */
-export async function executeTool(name, args) {
+export async function executeTool(name, args, context = {}) {
   // 先检查是否是 MCP 工具
   if (isMCPTool(name)) {
     return await executeMCPTool(name, args);
@@ -573,6 +604,51 @@ export async function executeTool(name, args) {
     }
 
     // ── 系统级工具 ──
+    case 'request_secret_input': {
+      if (!context.output || !context.output.askSecret) {
+        return '⚠️ 当前环境不支持安全输入框。';
+      }
+      const secret = await context.output.askSecret(args.message);
+      if (!secret) {
+        return '用户取消了输入。';
+      }
+
+      try {
+        if (args.target === 'env') {
+          const envPath = path.join(MIDOU_HOME, '.env');
+          let envContent = '';
+          try { envContent = await fs.readFile(envPath, 'utf-8'); } catch (e) {}
+          
+          const regex = new RegExp(`^${args.keyName}=.*$`, 'm');
+          if (regex.test(envContent)) {
+            envContent = envContent.replace(regex, `${args.keyName}=${secret}`);
+          } else {
+            envContent += (envContent && !envContent.endsWith('\n') ? '\n' : '') + `${args.keyName}=${secret}\n`;
+          }
+          await fs.writeFile(envPath, envContent, 'utf-8');
+          return `✅ 密钥已安全保存到 .env 文件中的 ${args.keyName}。`;
+        } else if (args.target === 'mcp') {
+          if (!args.mcpServerName) return '⚠️ 缺少 mcpServerName 参数。';
+          const mcpPath = path.join(MIDOU_HOME, 'mcp.json');
+          let mcpConfig = { mcpServers: {} };
+          try { mcpConfig = JSON.parse(await fs.readFile(mcpPath, 'utf-8')); } catch (e) {}
+          
+          if (!mcpConfig.mcpServers[args.mcpServerName]) {
+            mcpConfig.mcpServers[args.mcpServerName] = { command: '', args: [], env: {} };
+          }
+          if (!mcpConfig.mcpServers[args.mcpServerName].env) {
+            mcpConfig.mcpServers[args.mcpServerName].env = {};
+          }
+          mcpConfig.mcpServers[args.mcpServerName].env[args.keyName] = secret;
+          await fs.writeFile(mcpPath, JSON.stringify(mcpConfig, null, 2), 'utf-8');
+          return `✅ 密钥已安全保存到 mcp.json 中 ${args.mcpServerName} 的环境变量 ${args.keyName}。`;
+        }
+      } catch (err) {
+        return `⚠️ 保存密钥失败: ${err.message}`;
+      }
+      return '⚠️ 未知的 target 类型。';
+    }
+
     case 'run_command': {
       const safeCheck = isSafeCommand(args.command);
       if (safeCheck === 'SUDO_BLOCKED') {
