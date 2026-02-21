@@ -1,109 +1,114 @@
 <template>
-  <div class="h-full w-full flex">
-    <div class="flex-1 flex flex-col relative">
-      <div class="p-4 bg-white border-b border-gray-200 flex justify-between items-center z-10">
-        <h2 class="text-lg font-semibold">Agent Graph Editor</h2>
-        <div class="flex gap-2">
-          <button @click="addAgent" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Add Agent</button>
-          <button @click="saveSystem" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Save System</button>
-        </div>
-      </div>
-      <div class="flex-1 relative">
-        <VueFlow v-model="elements" :default-zoom="1" :min-zoom="0.2" :max-zoom="4" @connect="onConnect" @nodeClick="onNodeClick" @edgeClick="onEdgeClick" @paneClick="onPaneClick">
-          <Background pattern-color="#aaa" gap="8" />
-          <Controls />
-          <MiniMap />
-        </VueFlow>
-      </div>
+  <div class="graph-editor">
+    <div class="toolbar">
+      <button @click="addAgent">Add Agent</button>
+      <button @click="saveSystem" :disabled="isSaving">
+        {{ isSaving ? 'Saving...' : 'Save System' }}
+      </button>
+      <button @click="showMcpConfig = true">Configure MCP</button>
     </div>
     
-    <!-- Properties Panel -->
-    <div v-if="selectedElement" class="w-96 bg-gray-50 border-l border-gray-200 p-4 overflow-y-auto flex flex-col gap-4">
-      <h3 class="font-bold text-lg border-b pb-2">{{ isNode(selectedElement) ? 'Agent Properties' : 'Connection Properties' }}</h3>
-      
-      <template v-if="isNode(selectedElement)">
-        <div>
-          <label class="block text-sm font-medium text-gray-700">Name</label>
-          <input v-model="selectedElement.label" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border" />
+    <div class="editor-container">
+      <VueFlow
+        v-model="elements"
+        :default-zoom="1"
+        :min-zoom="0.2"
+        :max-zoom="4"
+        @connect="onConnect"
+        @node-click="onNodeClick"
+        @edge-click="onEdgeClick"
+        class="vue-flow-container"
+      >
+        <Background pattern-color="#aaa" gap="16" />
+        <Controls />
+        <MiniMap />
+      </VueFlow>
+
+      <!-- Agent Config Panel -->
+      <div v-if="selectedNode" class="config-panel">
+        <h3>Agent Configuration</h3>
+        <div class="form-group">
+          <label>Name:</label>
+          <input v-model="selectedNode.data.name" @input="updateNodeLabel" />
         </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700">System Prompt</label>
-          <textarea v-model="selectedElement.data.systemPrompt" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"></textarea>
+        <div class="form-group">
+          <label>System Prompt:</label>
+          <textarea v-model="selectedNode.data.systemPrompt" rows="5"></textarea>
         </div>
         
-        <div class="border-t pt-2">
-          <h4 class="font-semibold text-sm mb-2">LLM Configuration</h4>
-          <div class="space-y-2">
-            <div>
-              <label class="block text-xs font-medium text-gray-700">Provider</label>
-              <select v-model="selectedElement.data.provider" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border">
-                <option value="">Default</option>
-                <option value="openai">OpenAI Compatible</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-700">Model</label>
-              <input v-model="selectedElement.data.model" placeholder="e.g. gpt-4o" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border" />
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-700">API Key</label>
-              <input v-model="selectedElement.data.apiKey" type="password" placeholder="Leave empty to use default" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border" />
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-700">Base URL</label>
-              <input v-model="selectedElement.data.baseURL" placeholder="Leave empty to use default" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border" />
-            </div>
-          </div>
+        <h4>LLM Settings</h4>
+        <div class="form-group">
+          <label>Provider:</label>
+          <select v-model="selectedNode.data.provider">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Model:</label>
+          <input v-model="selectedNode.data.model" />
+        </div>
+        <div class="form-group">
+          <label>Base URL:</label>
+          <input v-model="selectedNode.data.baseURL" />
+        </div>
+        <div class="form-group">
+          <label>API Key:</label>
+          <input type="password" v-model="selectedNode.data.apiKey" />
         </div>
 
-        <div class="border-t pt-2">
-          <div class="flex justify-between items-center mb-2">
-            <h4 class="font-semibold text-sm">Cron Jobs</h4>
-            <button @click="addCronJob" class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200">+ Add</button>
+        <h4>Cron Jobs</h4>
+        <div v-for="(job, index) in selectedNode.data.cronJobs" :key="index" class="cron-job">
+          <input v-model="job.expression" placeholder="* * * * *" class="cron-expr" />
+          <input v-model="job.prompt" placeholder="Trigger prompt" class="cron-prompt" />
+          <button @click="removeCronJob(index)" class="btn-remove">X</button>
+        </div>
+        <button @click="addCronJob" class="btn-add">+ Add Cron Job</button>
+
+        <button @click="selectedNode = null" class="btn-close">Close</button>
+      </div>
+
+      <!-- Edge Config Panel -->
+      <div v-if="selectedEdge" class="config-panel">
+        <h3>Connection Configuration</h3>
+        <div class="form-group">
+          <label>Condition (contains):</label>
+          <input v-model="selectedEdge.data.condition" placeholder="Leave empty for all messages" />
+        </div>
+        <button @click="removeEdge" class="btn-remove-edge">Delete Connection</button>
+        <button @click="selectedEdge = null" class="btn-close">Close</button>
+      </div>
+
+      <!-- MCP Config Modal -->
+      <div v-if="showMcpConfig" class="modal-overlay">
+        <div class="modal-content">
+          <h3>MCP Servers Configuration</h3>
+          <div class="mcp-servers-list">
+            <div v-for="(server, name) in mcpServers" :key="name" class="mcp-server-item">
+              <h4>{{ name }}</h4>
+              <div class="form-group">
+                <label>Command:</label>
+                <input v-model="server.command" />
+              </div>
+              <div class="form-group">
+                <label>Args (JSON array):</label>
+                <input :value="JSON.stringify(server.args)" @change="e => updateMcpArgs(name, e.target.value)" />
+              </div>
+              <button @click="removeMcpServer(name)" class="btn-remove">Remove Server</button>
+            </div>
           </div>
-          <div v-if="!selectedElement.data.cronJobs || selectedElement.data.cronJobs.length === 0" class="text-xs text-gray-500">No cron jobs configured.</div>
-          <div v-for="(job, index) in selectedElement.data.cronJobs" :key="index" class="bg-white p-2 rounded border border-gray-200 mb-2 relative">
-            <button @click="removeCronJob(index)" class="absolute top-1 right-1 text-red-500 hover:text-red-700 text-xs">✕</button>
-            <div class="mb-1">
-              <label class="block text-xs font-medium text-gray-700">Expression</label>
-              <input v-model="job.expression" placeholder="* * * * *" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs p-1 border" />
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-700">Prompt to Execute</label>
-              <textarea v-model="job.prompt" rows="2" placeholder="What should AI do?" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs p-1 border"></textarea>
-            </div>
+          
+          <div class="add-mcp-server">
+            <h4>Add New Server</h4>
+            <input v-model="newMcpName" placeholder="Server Name" />
+            <button @click="addMcpServer">Add</button>
+          </div>
+          
+          <div class="modal-actions">
+            <button @click="showMcpConfig = false">Close</button>
           </div>
         </div>
-      </template>
-      
-      <template v-else>
-        <div>
-          <label class="block text-sm font-medium text-gray-700">Label</label>
-          <input v-model="selectedElement.label" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border" />
-        </div>
-        
-        <div class="border-t pt-2">
-          <div class="flex justify-between items-center mb-2">
-            <h4 class="font-semibold text-sm">Routing Conditions</h4>
-            <button @click="addCondition" class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200">+ Add</button>
-          </div>
-          <p class="text-xs text-gray-500 mb-2">Message will be routed if ANY condition matches.</p>
-          <div v-if="!selectedElement.data.conditions || selectedElement.data.conditions.length === 0" class="text-xs text-gray-500">No conditions (always routes).</div>
-          <div v-for="(cond, index) in selectedElement.data.conditions" :key="index" class="bg-white p-2 rounded border border-gray-200 mb-2 flex gap-2 items-start">
-            <div class="flex-1 space-y-1">
-              <select v-model="cond.type" class="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs p-1 border">
-                <option value="contains">Contains</option>
-                <option value="regex">Regex</option>
-              </select>
-              <input v-model="cond.value" placeholder="Value" class="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs p-1 border" />
-            </div>
-            <button @click="removeCondition(index)" class="text-red-500 hover:text-red-700 text-xs mt-1">✕</button>
-          </div>
-        </div>
-      </template>
-      
-      <button @click="deleteSelected" class="mt-auto bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Delete</button>
+      </div>
     </div>
   </div>
 </template>
@@ -116,160 +121,348 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
-import '@vue-flow/controls/dist/style.css'
-import '@vue-flow/minimap/dist/style.css'
+
+const { addEdges, onConnect: onConnectFlow } = useVueFlow()
 
 const elements = ref([])
-const selectedElement = ref(null)
-const { onConnect: onConnectFlow, addEdges } = useVueFlow()
+const selectedNode = ref(null)
+const selectedEdge = ref(null)
+const isSaving = ref(false)
+const showMcpConfig = ref(false)
+const mcpServers = ref({})
+const newMcpName = ref('')
+
+let nodeId = 1
 
 onMounted(async () => {
-  await loadSystem()
-})
-
-const isNode = (el) => !el.source
-
-const onNodeClick = (event) => {
-  selectedElement.value = event.node
-  // Ensure arrays exist
-  if (!selectedElement.value.data.cronJobs) selectedElement.value.data.cronJobs = []
-}
-
-const onEdgeClick = (event) => {
-  selectedElement.value = event.edge
-  // Ensure arrays exist
-  if (!selectedElement.value.data.conditions) selectedElement.value.data.conditions = []
-}
-
-const onPaneClick = () => {
-  selectedElement.value = null
-}
-
-const deleteSelected = () => {
-  if (selectedElement.value) {
-    elements.value = elements.value.filter(el => el.id !== selectedElement.value.id)
-    selectedElement.value = null
-  }
-}
-
-const addCronJob = () => {
-  if (!selectedElement.value.data.cronJobs) selectedElement.value.data.cronJobs = []
-  selectedElement.value.data.cronJobs.push({ expression: '', prompt: '' })
-}
-
-const removeCronJob = (index) => {
-  selectedElement.value.data.cronJobs.splice(index, 1)
-}
-
-const addCondition = () => {
-  if (!selectedElement.value.data.conditions) selectedElement.value.data.conditions = []
-  selectedElement.value.data.conditions.push({ type: 'contains', value: '' })
-}
-
-const removeCondition = (index) => {
-  selectedElement.value.data.conditions.splice(index, 1)
-}
-
-const loadSystem = async () => {
   try {
-    const res = await fetch('http://localhost:3000/api/system')
-    const data = await res.json()
+    const response = await fetch('/api/system')
+    const data = await response.json()
     
-    const nodes = (data.agents || []).map(agent => {
-      // Migrate old cron to new cronJobs array
-      const data = { ...agent.data }
-      if (data.cron && (!data.cronJobs || data.cronJobs.length === 0)) {
-        data.cronJobs = [{ expression: data.cron, prompt: 'System: Scheduled activation triggered.' }]
-        delete data.cron
+    const nodes = (data.agents || []).map(agent => ({
+      id: agent.id,
+      type: 'default',
+      label: agent.name || agent.id,
+      position: agent.position || { x: Math.random() * 400, y: Math.random() * 400 },
+      data: {
+        name: agent.name || agent.id,
+        systemPrompt: agent.data?.systemPrompt || '',
+        provider: agent.data?.provider || 'anthropic',
+        model: agent.data?.model || '',
+        baseURL: agent.data?.baseURL || '',
+        apiKey: agent.data?.apiKey || '',
+        cronJobs: agent.data?.cronJobs || []
       }
-      if (!data.cronJobs) data.cronJobs = []
-      
-      return {
-        id: agent.id,
-        label: agent.name,
-        position: agent.position || { x: Math.random() * 400, y: Math.random() * 400 },
-        data
-      }
-    })
+    }))
     
-    const edges = (data.connections || []).map(conn => {
-      // Migrate old condition to new conditions array
-      const data = { ...conn.data }
-      if (data.condition && (!data.conditions || data.conditions.length === 0)) {
-        data.conditions = [{ type: 'contains', value: data.condition }]
-        delete data.condition
-      }
-      if (!data.conditions) data.conditions = []
-
-      return {
-        id: conn.id || `e-${conn.source}-${conn.target}`,
-        source: conn.source,
-        target: conn.target,
-        animated: true,
-        label: conn.type || 'communicates',
-        data
-      }
-    })
+    const edges = (data.connections || []).map(conn => ({
+      id: conn.id,
+      source: conn.source,
+      target: conn.target,
+      data: { condition: conn.data?.condition || '' }
+    }))
     
     elements.value = [...nodes, ...edges]
+    
+    if (nodes.length > 0) {
+      const maxId = Math.max(...nodes.map(n => parseInt(n.id.replace('agent-', '')) || 0))
+      nodeId = maxId + 1
+    }
+
+    mcpServers.value = data.mcpServers || {}
   } catch (error) {
     console.error('Failed to load system:', error)
   }
-}
-
-const saveSystem = async () => {
-  const nodes = elements.value.filter(el => !el.source)
-  const edges = elements.value.filter(el => el.source)
-  
-  const systemData = {
-    agents: nodes.map(n => ({
-      id: n.id,
-      name: n.label,
-      position: n.position,
-      data: n.data || {}
-    })),
-    connections: edges.map(e => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      type: e.label,
-      data: e.data || {}
-    }))
-  }
-  
-  try {
-    await fetch('http://localhost:3000/api/system', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(systemData)
-    })
-    alert('System saved successfully!')
-  } catch (error) {
-    console.error('Failed to save system:', error)
-    alert('Failed to save system')
-  }
-}
+})
 
 const addAgent = () => {
-  const id = `agent-${Date.now()}`
+  const id = `agent-${nodeId++}`
   elements.value.push({
     id,
-    label: `New Agent`,
+    type: 'default',
+    label: `New Agent ${id}`,
     position: { x: 100, y: 100 },
-    data: { systemPrompt: 'You are a helpful assistant.', cronJobs: [], model: '', provider: '', apiKey: '', baseURL: '' }
+    data: {
+      name: `New Agent ${id}`,
+      systemPrompt: 'You are a helpful AI assistant.',
+      provider: 'anthropic',
+      model: '',
+      baseURL: '',
+      apiKey: '',
+      cronJobs: []
+    }
   })
 }
 
 const onConnect = (params) => {
-  params.id = `e-${params.source}-${params.target}-${Date.now()}`
-  params.animated = true
-  params.data = { conditions: [] }
+  params.id = `edge-${params.source}-${params.target}`
+  params.data = { condition: '' }
   addEdges([params])
+}
+
+const onNodeClick = (event) => {
+  selectedEdge.value = null
+  selectedNode.value = event.node
+}
+
+const onEdgeClick = (event) => {
+  selectedNode.value = null
+  selectedEdge.value = event.edge
+}
+
+const updateNodeLabel = () => {
+  if (selectedNode.value) {
+    selectedNode.value.label = selectedNode.value.data.name
+  }
+}
+
+const addCronJob = () => {
+  if (!selectedNode.value.data.cronJobs) {
+    selectedNode.value.data.cronJobs = []
+  }
+  selectedNode.value.data.cronJobs.push({ expression: '', prompt: '' })
+}
+
+const removeCronJob = (index) => {
+  selectedNode.value.data.cronJobs.splice(index, 1)
+}
+
+const removeEdge = () => {
+  if (selectedEdge.value) {
+    elements.value = elements.value.filter(e => e.id !== selectedEdge.value.id)
+    selectedEdge.value = null
+  }
+}
+
+const addMcpServer = () => {
+  if (newMcpName.value && !mcpServers.value[newMcpName.value]) {
+    mcpServers.value[newMcpName.value] = {
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-everything']
+    }
+    newMcpName.value = ''
+  }
+}
+
+const removeMcpServer = (name) => {
+  delete mcpServers.value[name]
+}
+
+const updateMcpArgs = (name, valueStr) => {
+  try {
+    mcpServers.value[name].args = JSON.parse(valueStr)
+  } catch (e) {
+    console.error('Invalid JSON for args')
+  }
+}
+
+const saveSystem = async () => {
+  isSaving.value = true
+  try {
+    const nodes = elements.value.filter(e => !e.source)
+    const edges = elements.value.filter(e => e.source)
+    
+    const system = {
+      agents: nodes.map(n => ({
+        id: n.id,
+        name: n.data.name,
+        position: n.position,
+        data: {
+          systemPrompt: n.data.systemPrompt,
+          provider: n.data.provider,
+          model: n.data.model,
+          baseURL: n.data.baseURL,
+          apiKey: n.data.apiKey,
+          cronJobs: n.data.cronJobs
+        }
+      })),
+      connections: edges.map(e => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        data: e.data
+      })),
+      mcpServers: mcpServers.value
+    }
+    
+    await fetch('/api/system', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(system)
+    })
+    
+    alert('System saved successfully!')
+  } catch (error) {
+    console.error('Failed to save system:', error)
+    alert('Failed to save system')
+  } finally {
+    isSaving.value = false
+  }
 }
 </script>
 
-<style>
-.vue-flow__node {
-  @apply bg-white border-2 border-blue-500 rounded-lg p-4 shadow-md font-semibold text-center min-w-[120px];
+<style scoped>
+.graph-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.toolbar {
+  padding: 10px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  gap: 10px;
+}
+
+.toolbar button {
+  padding: 8px 16px;
+  background: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.toolbar button:disabled {
+  background: #ccc;
+}
+
+.editor-container {
+  flex: 1;
+  position: relative;
+  display: flex;
+}
+
+.vue-flow-container {
+  flex: 1;
+  height: 100%;
+}
+
+.config-panel {
+  width: 300px;
+  background: white;
+  border-left: 1px solid #ddd;
+  padding: 20px;
+  overflow-y: auto;
+  box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.cron-job {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.cron-expr {
+  width: 80px;
+}
+
+.cron-prompt {
+  flex: 1;
+}
+
+.btn-remove {
+  background: #f44336;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-add {
+  width: 100%;
+  padding: 8px;
+  background: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.btn-close {
+  width: 100%;
+  padding: 10px;
+  background: #607D8B;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-top: 20px;
+}
+
+.btn-remove-edge {
+  width: 100%;
+  padding: 10px;
+  background: #f44336;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  width: 500px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.mcp-server-item {
+  border: 1px solid #eee;
+  padding: 10px;
+  margin-bottom: 10px;
+  border-radius: 4px;
+}
+
+.add-mcp-server {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.modal-actions {
+  margin-top: 20px;
+  text-align: right;
 }
 </style>

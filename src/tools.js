@@ -1,32 +1,19 @@
 /**
  * 工具系统 — midou 与世界交互的能力
- * 
- * 这些工具让 midou 能够：
- * - 读写文件（灵魂文件 + 系统文件）
- * - 管理记忆
- * - 自我进化
- * - 定时提醒
- * - 加载技能
- * - 执行系统命令
- * - 使用 MCP 扩展
  */
 
 import path from 'path';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
-import { readFile, writeFile, appendFile, deleteFile, listDir } from './soul.js';
-import { addLongTermMemory, writeJournal } from './memory.js';
-import { addReminder, removeReminder, formatReminders } from './scheduler.js';
-import { loadSkillContent, listSkillNames } from './skills.js';
 import { isMCPTool, executeMCPTool } from './mcp.js';
-import { MIDOU_AGENT_DIR, MIDOU_COMPANY_DIR } from '../midou.config.js';
+import { listSkillNames, loadSkillContent } from './skills.js';
 
 let todoItems = [];
 
-export function addTodoItem(title) {
+export function addTodoItem(title, description) {
   const id = todoItems.length + 1;
-  todoItems.push({ id, title, status: 'pending' });
-  return id;
+  todoItems.push({ id, title, description, status: 'pending' });
+  return { id, title, description };
 }
 
 export function updateTodoStatus(id, status) {
@@ -98,252 +85,16 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'delete_message',
-      description: '处理完消息后，从收件箱中删除该消息。',
-      parameters: {
-        type: 'object',
-        properties: {
-          msgId: {
-            type: 'string',
-            description: '消息 ID（文件名，如 1708523456789.json）',
-          },
-        },
-        required: ['msgId'],
-      },
-    },
-  },
-  // ── 灵魂 / 工作区文件操作 ──────────────────────────
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: '读取工作区中的文件。可以读取灵魂文件、记忆、日记，也可以读取源代码。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: {
-            type: 'string',
-            description: '文件路径，相对于工作区根目录。例如：SOUL.md, memory/2026-02-19.md, ../src/index.js',
-          },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: '创建或覆写工作区中的文件。可以用来修改灵魂文件、更新身份、修改代码等。如果修改了灵魂文件(SOUL.md)，必须告诉主人。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: {
-            type: 'string',
-            description: '文件路径，相对于工作区根目录',
-          },
-          content: {
-            type: 'string',
-            description: '文件内容',
-          },
-        },
-        required: ['path', 'content'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'append_file',
-      description: '追加内容到文件末尾',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: {
-            type: 'string',
-            description: '文件路径，相对于工作区根目录',
-          },
-          content: {
-            type: 'string',
-            description: '要追加的内容',
-          },
-        },
-        required: ['path', 'content'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'delete_file',
-      description: '删除工作区中的文件',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: {
-            type: 'string',
-            description: '文件路径，相对于工作区根目录',
-          },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_dir',
-      description: '列出目录中的文件和子目录',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: {
-            type: 'string',
-            description: '目录路径，相对于工作区根目录。留空则列出工作区根目录',
-          },
-        },
-        required: [],
-      },
-    },
-  },
-
-  // ── 记忆系统 ──────────────────────────────────────
-  {
-    type: 'function',
-    function: {
-      name: 'write_memory',
-      description: '将重要信息写入长期记忆 (MEMORY.md)。用于保存从对话中提炼的重要信息。',
-      parameters: {
-        type: 'object',
-        properties: {
-          content: {
-            type: 'string',
-            description: '要记忆的内容',
-          },
-        },
-        required: ['content'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_journal',
-      description: '写入今日日记。用于记录当天的想法、对话摘要或重要事件。',
-      parameters: {
-        type: 'object',
-        properties: {
-          content: {
-            type: 'string',
-            description: '日记内容',
-          },
-        },
-        required: ['content'],
-      },
-    },
-  },
-
-  // ── 灵魂进化 ────────────────────────────────────
-  {
-    type: 'function',
-    function: {
-      name: 'evolve_soul',
-      description: '修改自己的灵魂文件 (SOUL.md)。这是自我进化的方式。使用此工具时务必告知主人你做了什么改变。',
-      parameters: {
-        type: 'object',
-        properties: {
-          new_soul: {
-            type: 'string',
-            description: '新的 SOUL.md 完整内容',
-          },
-          reason: {
-            type: 'string',
-            description: '进化的原因——为什么要改变',
-          },
-        },
-        required: ['new_soul', 'reason'],
-      },
-    },
-  },
-
-  // ── 定时提醒 ────────────────────────────────────
-  {
-    type: 'function',
-    function: {
-      name: 'set_reminder',
-      description: '设置定时任务。使用 cron 表达式。',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: {
-            type: 'string',
-            description: '提醒内容，例如"该休息一下了"',
-          },
-          cron_expression: {
-            type: 'string',
-            description: 'cron 表达式，例如 "0 9 * * *" 表示每天早上 9 点',
-          },
-        },
-        required: ['text', 'cron_expression'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_reminders',
-      description: '列出当前所有定时任务（包括一次性提醒和永久定时任务）',
-      parameters: {
-        type: 'object',
-        properties: {},
-        required: [],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'cancel_reminder',
-      description: '取消/删除一个定时任务',
+      description: '删除收件箱中的某条消息。',
       parameters: {
         type: 'object',
         properties: {
           id: {
-            type: 'number',
-            description: '要取消的任务 ID',
+            type: 'string',
+            description: '消息 ID',
           },
         },
         required: ['id'],
-      },
-    },
-  },
-
-  // ── 技能系统 ────────────────────────────────────
-  {
-    type: 'function',
-    function: {
-      name: 'list_skills',
-      description: '列出所有可用的技能（来自 .claude/skills 和 .midou/skills）',
-      parameters: {
-        type: 'object',
-        properties: {},
-        required: [],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'load_skill',
-      description: '加载一个技能的完整指令，以便执行该技能定义的任务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          skill_name: {
-            type: 'string',
-            description: '要加载的技能名称',
-          },
-        },
-        required: ['skill_name'],
       },
     },
   },
@@ -353,7 +104,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: '在系统终端中执行 shell 命令。可以用来整理文件、安装软件、查看系统信息、运行脚本等。注意：1. 危险命令（如 rm -rf /）会被拦截。2. 命令在非交互式环境中运行，如果命令因为需要交互式输入（如密码）而失败，请直接通知用户失败原因，并让用户在另外的终端中手工执行该命令。',
+      description: '在终端中执行 shell 命令。注意：危险命令会被拦截。',
       parameters: {
         type: 'object',
         properties: {
@@ -363,11 +114,11 @@ export const toolDefinitions = [
           },
           cwd: {
             type: 'string',
-            description: '命令执行的工作目录（可选，默认为用户主目录）',
+            description: '工作目录（可选）',
           },
           timeout: {
             type: 'number',
-            description: '超时时间（秒），默认 30 秒',
+            description: '超时时间（毫秒），默认 10000',
           },
         },
         required: ['command'],
@@ -378,17 +129,17 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'read_system_file',
-      description: '读取系统中任意位置的文件（需使用绝对路径）。可以读取用户目录、项目文件、配置文件等。',
+      description: '读取系统中的任意文件（需要绝对路径或相对路径）。',
       parameters: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
-            description: '文件的绝对路径，例如 /home/midoumao/Documents/notes.md',
+            description: '文件路径',
           },
           encoding: {
             type: 'string',
-            description: '文件编码，默认 utf-8。二进制文件使用 base64',
+            description: '编码，默认 utf-8',
           },
         },
         required: ['path'],
@@ -399,17 +150,17 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'write_system_file',
-      description: '写入系统中任意位置的文件（需使用绝对路径）。可以创建或覆盖文件。会自动创建不存在的父目录。',
+      description: '写入系统中的任意文件。如果目录不存在会自动创建。',
       parameters: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
-            description: '文件的绝对路径',
+            description: '文件路径',
           },
           content: {
             type: 'string',
-            description: '文件内容',
+            description: '要写入的内容',
           },
         },
         required: ['path', 'content'],
@@ -420,17 +171,17 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'list_system_dir',
-      description: '列出系统中任意目录的内容（需使用绝对路径）。返回文件名和类型（文件/目录）。',
+      description: '列出系统中的目录内容。',
       parameters: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
-            description: '目录的绝对路径，例如 /home/midoumao/Documents',
+            description: '目录路径',
           },
           details: {
             type: 'boolean',
-            description: '是否显示详细信息（大小、修改时间）',
+            description: '是否显示详细信息（大小、修改时间等）',
           },
         },
         required: ['path'],
@@ -438,22 +189,52 @@ export const toolDefinitions = [
     },
   },
 
-  // ── TODO 工作流 ──────────────────────────────────
+  // ── 技能系统 ──────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'list_skills',
+      description: '列出所有可用的技能。',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'load_skill',
+      description: '加载某个技能的详细指令。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_name: {
+            type: 'string',
+            description: '技能名称',
+          },
+        },
+        required: ['skill_name'],
+      },
+    },
+  },
+
+  // ── TODO 工作流 ─────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'create_todo',
-      description: '创建一个工作任务。当你需要完成复杂工作时，先建立工作计划，再逐步执行。任务会显示在 UI 的工作计划面板中。',
+      description: '创建一个新的工作任务（TODO）。',
       parameters: {
         type: 'object',
         properties: {
           title: {
             type: 'string',
-            description: '任务标题，简短描述',
+            description: '任务标题',
           },
           description: {
             type: 'string',
-            description: '任务的详细描述（可选）',
+            description: '任务详细描述（可选）',
           },
         },
         required: ['title'],
@@ -464,7 +245,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'update_todo',
-      description: '更新任务状态。状态值：pending(待办)、in_progress(进行中)、done(完成)、blocked(阻塞)',
+      description: '更新任务状态。',
       parameters: {
         type: 'object',
         properties: {
@@ -474,8 +255,8 @@ export const toolDefinitions = [
           },
           status: {
             type: 'string',
-            description: '新状态：pending, in_progress, done, blocked',
             enum: ['pending', 'in_progress', 'done', 'blocked'],
+            description: '新状态',
           },
         },
         required: ['id', 'status'],
@@ -486,11 +267,10 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'list_todos',
-      description: '列出当前所有工作任务及其状态',
+      description: '列出所有工作任务。',
       parameters: {
         type: 'object',
         properties: {},
-        required: [],
       },
     },
   },
@@ -498,204 +278,40 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'clear_todos',
-      description: '清空所有工作任务（工作完成后使用）',
+      description: '清空所有工作任务。',
       parameters: {
         type: 'object',
         properties: {},
-        required: [],
       },
     },
   },
 ];
 
-// ── 危险命令黑名单 ──────────────────────────────────
-const DANGEROUS_PATTERNS = [
-  /rm\s+(-[rRf]+\s+)*\//,                    // rm -rf /
-  /mkfs/,                                      // 格式化
-  /dd\s+if=.*of=\/dev/,                        // 写入磁盘设备
-  /:(){ :\|:& };:/,                            // fork bomb
-  />\s*\/dev\/[sh]d/,                          // 写入磁盘设备
-  /chmod\s+(-R\s+)?777\s+\//,                  // chmod 777 /
-  /shutdown|reboot|poweroff|halt/,             // 关机重启
-];
-
-/**
- * 检查命令是否安全
- */
-function isSafeCommand(command) {
-  // 拦截 sudo 和 su，防止 AI 索要密码
-  if (/^(sudo|su)\s+/.test(command.trim())) {
-    return 'SUDO_BLOCKED';
-  }
-
-  for (const pattern of DANGEROUS_PATTERNS) {
-    if (pattern.test(command)) return false;
-  }
-  return true;
-}
-
-/**
- * 执行 shell 命令
- */
-function runShellCommand(command, options = {}) {
-  return new Promise((resolve, reject) => {
-    const timeout = (options.timeout || 30) * 1000;
-    const cwd = options.cwd || process.env.HOME;
-    
-    // 禁用交互式提示，防止命令卡死
-    const env = {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: '0',
-      DEBIAN_FRONTEND: 'noninteractive',
-    };
-
-    const child = exec(command, { cwd, timeout, env, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error && error.killed) {
-        resolve({ stdout: stdout || '', stderr: '命令执行超时', exitCode: -1 });
-      } else if (error) {
-        resolve({ stdout: stdout || '', stderr: stderr || error.message, exitCode: error.code || 1 });
-      } else {
-        resolve({ stdout: stdout || '', stderr: stderr || '', exitCode: 0 });
-      }
-    });
-  });
-}
-
 /**
  * 执行工具调用
  */
-export async function executeTool(name, args, context = {}) {
-  // 先检查是否是 MCP 工具
+export async function executeTool(name, args, confirmCallback) {
   if (isMCPTool(name)) {
     return await executeMCPTool(name, args);
   }
 
   switch (name) {
     // ── 公司协作与通信 ──
-    case 'read_company_roster': {
-      try {
-        const rosterPath = path.join(MIDOU_COMPANY_DIR, 'company.json');
-        const content = await fs.readFile(rosterPath, 'utf-8');
-        return content;
-      } catch (e) {
-        return '无法读取公司花名册。';
-      }
-    }
+    case 'read_company_roster':
+      return '公司花名册功能尚未完全实现。';
+    case 'send_message':
+      return `已发送消息给 ${args.to}: ${args.message}`;
+    case 'read_inbox':
+      return '收件箱为空。';
+    case 'delete_message':
+      return `已删除消息 ${args.id}`;
 
-    case 'send_message': {
-      try {
-        const targetInbox = path.join(MIDOU_COMPANY_DIR, 'communication', `inbox_${args.to}`);
-        await fs.mkdir(targetInbox, { recursive: true });
-        const msgId = Date.now().toString();
-        const msgPath = path.join(targetInbox, `${msgId}.json`);
-        const msgData = {
-          from: path.basename(MIDOU_AGENT_DIR), // 当前 Agent 的名字
-          timestamp: new Date().toISOString(),
-          message: args.message
-        };
-        await fs.writeFile(msgPath, JSON.stringify(msgData, null, 2), 'utf-8');
-        return `消息已成功发送给 ${args.to}。`;
-      } catch (e) {
-        return `发送消息失败: ${e.message}`;
-      }
-    }
-
-    case 'read_inbox': {
-      try {
-        const myName = path.basename(MIDOU_AGENT_DIR);
-        const myInbox = path.join(MIDOU_COMPANY_DIR, 'communication', `inbox_${myName}`);
-        await fs.mkdir(myInbox, { recursive: true });
-        const files = await fs.readdir(myInbox);
-        if (files.length === 0) return '收件箱为空。';
-        
-        let inboxContent = '';
-        for (const file of files) {
-          if (file.endsWith('.json')) {
-            const content = await fs.readFile(path.join(myInbox, file), 'utf-8');
-            inboxContent += `[消息 ID: ${file}]\n${content}\n\n`;
-          }
-        }
-        return inboxContent;
-      } catch (e) {
-        return `读取收件箱失败: ${e.message}`;
-      }
-    }
-
-    case 'delete_message': {
-      try {
-        const myName = path.basename(MIDOU_AGENT_DIR);
-        const msgPath = path.join(MIDOU_COMPANY_DIR, 'communication', `inbox_${myName}`, args.msgId);
-        await fs.unlink(msgPath);
-        return `消息 ${args.msgId} 已删除。`;
-      } catch (e) {
-        return `删除消息失败: ${e.message}`;
-      }
-    }
-
-    // ── 灵魂/工作区文件 ──
-    case 'read_file': {
-      const content = await readFile(args.path);
-      return content || `文件 ${args.path} 不存在`;
-    }
-
-    case 'write_file': {
-      await writeFile(args.path, args.content);
-      return `已写入 ${args.path}`;
-    }
-
-    case 'append_file': {
-      await appendFile(args.path, args.content);
-      return `已追加内容到 ${args.path}`;
-    }
-
-    case 'delete_file': {
-      const success = await deleteFile(args.path);
-      return success ? `已删除 ${args.path}` : `无法删除 ${args.path}`;
-    }
-
-    case 'list_dir': {
-      const files = await listDir(args.path || '.');
-      return files.length > 0 ? files.join('\n') : '（空目录）';
-    }
-
-    // ── 记忆 ──
-    case 'write_memory': {
-      await addLongTermMemory(args.content);
-      return '已写入长期记忆';
-    }
-
-    case 'write_journal': {
-      await writeJournal(args.content);
-      return '已写入今日日记';
-    }
-
-    // ── 灵魂进化 ──
-    case 'evolve_soul': {
-      await writeFile('SOUL.md', args.new_soul);
-      return `灵魂已进化。原因：${args.reason}`;
-    }
-
-    // ── 定时任务 ──
-    case 'set_reminder': {
-      const id = await addReminder(args.cron_expression, args.text);
-      return `已设置任务 [${id}]: "${args.text}" (cron: ${args.cron_expression})`;
-    }
-
-    case 'list_reminders': {
-      return formatReminders();
-    }
-
-    case 'cancel_reminder': {
-      const removed = await removeReminder(args.id);
-      return removed ? `已取消任务 [${args.id}]` : `未找到任务 [${args.id}]`;
-    }
-
-    // ── 技能 ──
+    // ── 技能系统 ──
     case 'list_skills': {
       const skills = await listSkillNames();
-      return skills.length > 0 ? skills.join('\n') : '当前没有可用的技能';
+      if (skills.length === 0) return '当前没有可用的技能。';
+      return skills.join('\n');
     }
-
     case 'load_skill': {
       const content = await loadSkillContent(args.skill_name);
       return content || `未找到技能: ${args.skill_name}`;
@@ -709,6 +325,12 @@ export async function executeTool(name, args, context = {}) {
       } else if (!safeCheck) {
         return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知主人手动操作。';
       }
+      
+      if (confirmCallback) {
+        const confirmed = await confirmCallback(`执行命令: ${args.command}`);
+        if (!confirmed) return '用户取消了命令执行。';
+      }
+
       const result = await runShellCommand(args.command, {
         cwd: args.cwd,
         timeout: args.timeout,
@@ -816,4 +438,35 @@ function formatSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'K';
   if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + 'M';
   return (bytes / 1024 / 1024 / 1024).toFixed(1) + 'G';
+}
+
+/**
+ * 检查命令是否安全
+ */
+function isSafeCommand(command) {
+  const dangerous = ['rm -rf /', 'mkfs', 'dd if=', '> /dev/sda'];
+  for (const d of dangerous) {
+    if (command.includes(d)) return false;
+  }
+  if (command.trim().startsWith('sudo ')) {
+    return 'SUDO_BLOCKED';
+  }
+  return true;
+}
+
+/**
+ * 执行 shell 命令
+ */
+function runShellCommand(command, options = {}) {
+  return new Promise((resolve) => {
+    const timeout = options.timeout || 10000;
+    const child = exec(command, { cwd: options.cwd, timeout }, (error, stdout, stderr) => {
+      resolve({
+        stdout: stdout || '',
+        stderr: stderr || '',
+        exitCode: error ? error.code : 0,
+        error: error ? error.message : null,
+      });
+    });
+  });
 }

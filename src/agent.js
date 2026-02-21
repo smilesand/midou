@@ -1,10 +1,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { ChatEngine } from './chat.js';
-import { SessionMemory } from './memory.js';
-import { buildSystemPrompt } from './soul.js';
 import { buildSkillsPrompt } from './skills.js';
-import { buildMCPPrompt } from './mcp.js';
 import { MIDOU_COMPANY_DIR } from '../midou.config.js';
 
 export class Agent {
@@ -22,7 +19,13 @@ export class Agent {
     await fs.mkdir(this.workspaceDir, { recursive: true });
     
     // Build prompt based on config
-    const systemPrompt = this.config.systemPrompt || `You are ${this.name}, an AI assistant.`;
+    let systemPrompt = this.config.systemPrompt || `You are ${this.name}, an AI assistant.`;
+    
+    // Append skills if available
+    const skillsPrompt = await buildSkillsPrompt();
+    if (skillsPrompt) {
+      systemPrompt += `\n\n=== 你的技能 ===\n${skillsPrompt}`;
+    }
     
     const llmConfig = {
       provider: this.config.provider || undefined,

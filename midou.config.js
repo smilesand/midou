@@ -1,5 +1,4 @@
 // midou.config.js — midou 的全局配置
-// 你可以根据需要修改这些配置
 
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -11,70 +10,28 @@ const __filename = fileURLToPath(import.meta.url);
 export const MIDOU_PKG = path.dirname(__filename);
 
 // MIDOU_COMPANY_DIR — 公司总部（公共资产 / 通信总线 / 全局配置）
-// 默认 ~/.midou/，可通过 MIDOU_COMPANY_DIR 环境变量自定义
 export const MIDOU_COMPANY_DIR = process.env.MIDOU_COMPANY_DIR || path.join(os.homedir(), '.midou');
 
-// MIDOU_AGENT_DIR — 当前 Agent 的私密工位（灵魂 / 记忆 / 私有配置）
-// 默认 ~/.midou/agents/manager/，可通过 MIDOU_AGENT_DIR 环境变量自定义
-export const MIDOU_AGENT_DIR = process.env.MIDOU_AGENT_DIR || path.join(MIDOU_COMPANY_DIR, 'agents', 'manager');
-
-// 为了兼容旧代码，保留 MIDOU_HOME 指向当前 Agent 的工位
-export const MIDOU_HOME = MIDOU_AGENT_DIR;
-
-// 先从公司总部加载全局 .env
+// 加载全局 .env
 dotenv.config({ path: path.join(MIDOU_COMPANY_DIR, '.env') });
-// 再从 Agent 工位加载私有 .env（覆盖全局）
-dotenv.config({ path: path.join(MIDOU_AGENT_DIR, '.env'), override: true });
 
 export default {
   // AI 模型配置
   llm: {
-    // ── 提供商选择 ──────────────────────────────────────
-    // 'anthropic' → Anthropic SDK（适用于 Claude / MiniMax）
-    // 'openai'    → OpenAI SDK （适用于 OpenAI / DeepSeek / Moonshot / 智谱 / Ollama …）
     provider: process.env.MIDOU_PROVIDER || 'anthropic',
-
-    // 当前使用的模型名称
     model: process.env.MIDOU_MODEL || 'MiniMax-M2.5',
-
-    // 通用参数
     temperature: 0.7,
     maxTokens: 4096,
 
-    // ── Anthropic SDK 配置 ─────────────────────────────
     anthropic: {
       baseURL: process.env.MIDOU_API_BASE || 'https://api.minimaxi.com/anthropic',
       apiKey:  process.env.MIDOU_API_KEY  || '',
     },
 
-    // ── OpenAI SDK 配置 ────────────────────────────────
     openai: {
       baseURL: process.env.MIDOU_API_BASE || 'https://api.openai.com/v1',
       apiKey:  process.env.MIDOU_API_KEY  || '',
     },
-  },
-
-  // 心跳配置
-  heartbeat: {
-    enabled: true,
-    intervalMinutes: 30, // 每 30 分钟一次心跳
-    activeHours: {
-      start: 8,  // 早上 8 点开始
-      end: 22,   // 晚上 10 点结束
-    },
-  },
-
-  // 记忆配置
-  memory: {
-    // 每日日记的最大保留天数（0 = 永久）
-    maxDailyDays: 0,
-    // 上下文接近限制时自动保存记忆
-    autoFlush: true,
-  },
-
-  // 工作区路径（当前 Agent 的私密工位）
-  workspace: {
-    root: MIDOU_AGENT_DIR,
   },
 
   // 公司总部路径（公共资产 / 通信总线）
@@ -86,7 +43,4 @@ export default {
 
   // midou 包的安装位置（源码位置，用于自我进化）
   pkg: MIDOU_PKG,
-
-  // 兼容旧代码
-  home: MIDOU_AGENT_DIR,
 };

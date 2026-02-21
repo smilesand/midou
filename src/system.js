@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import cron from 'node-cron';
 import { Agent } from './agent.js';
+import { connectMCPServers, disconnectAll as disconnectMCP } from './mcp.js';
 import { MIDOU_COMPANY_DIR } from '../midou.config.js';
 
 export class SystemManager {
@@ -26,6 +27,13 @@ export class SystemManager {
       this.stopAllCronJobs();
       this.agents.clear();
       this.connections = system.connections || [];
+      await disconnectMCP();
+
+      // Initialize MCP servers
+      if (system.mcpServers) {
+        console.log('Initializing MCP servers...');
+        await connectMCPServers(system.mcpServers);
+      }
 
       // Initialize agents
       for (const agentConfig of system.agents || []) {
@@ -46,7 +54,7 @@ export class SystemManager {
       }
       console.log(`System loaded with ${this.agents.size} agents and ${this.connections.length} connections.`);
     } catch (error) {
-      console.log('No system.json found or error parsing, starting empty system.');
+      console.log('No system.json found or error parsing, starting empty system.', error);
       this.agents.clear();
       this.connections = [];
     }

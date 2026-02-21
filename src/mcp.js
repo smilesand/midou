@@ -1,28 +1,8 @@
 /**
  * MCP 客户端管理器 — midou 的扩展触手
- * 
- * 连接外部 MCP 服务器，让 midou 获得更多能力。
- * 就像猫咪伸出爪子探索新事物。
- * 
- * 配置文件: ~/.midou/mcp.json
- * 格式:
- * {
- *   "mcpServers": {
- *     "server-name": {
- *       "command": "npx",
- *       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"],
- *       "env": { "KEY": "value" }
- *     }
- *   }
- * }
  */
 
 import { spawn } from 'child_process';
-import fs from 'fs/promises';
-import path from 'path';
-import config from '../midou.config.js';
-
-const MCP_CONFIG_FILE = path.join(config.workspace.root, 'mcp.json');
 
 /**
  * MCP 服务器连接
@@ -62,7 +42,6 @@ class MCPConnection {
 
         this.process.stderr.on('data', (data) => {
           // MCP 服务器的 stderr 通常是日志
-          // 不做处理，避免干扰
         });
 
         this.process.on('error', (err) => {
@@ -103,36 +82,69 @@ class MCPConnection {
   }
 
   /**
-   * 处理从服务器收到的数据
+   * 断开连接
+   */
+  disconnect() {
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+    }
+    this.connected = false;
+    this.tools = [];
+  }
+
+  /**
+   * 获取工具列表
+   */
+  async _discoverTools() {
+    try {
+      const result = await this._sendRequest('tools/list', {});
+      if (result && result.tools) {
+        this.tools = result.tools;
+      }
+    } catch (err) {
+      console.error(`获取 MCP 服务器 ${this.name} 工具失败:`, err.message);
+    }
+  }
+
+  /**
+   * 执行工具
+   */
+  async callTool(name, args) {
+    if (!this.connected) {
+      throw new Error(`MCP 服务器 ${this.name} 未连接`);
+    }
+    return await this._sendRequest('tools/call', { name, arguments: args });
+  }
+
+  /**
+   * 处理接收到的数据 (JSON-RPC)
    */
   _handleData(data) {
     this._buffer += data;
-
-    // JSON-RPC 消息以换行分隔
-    const lines = this._buffer.split('\n');
-    this._buffer = lines.pop() || '';
+    
+    let lines = this._buffer.split('\n');
+    this._buffer = lines.pop(); // 保留最后一行（可能不完整）
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
+      if (!line.trim()) continue;
       try {
-        const msg = JSON.parse(trimmed);
-
-        // 响应消息
-        if (msg.id !== undefined && this._pendingRequests.has(msg.id)) {
-          const { resolve, reject } = this._pendingRequests.get(msg.id);
-          this._pendingRequests.delete(msg.id);
-
-          if (msg.error) {
-            reject(new Error(`MCP Error: ${msg.error.message}`));
-          } else {
-            resolve(msg.result);
+        const message = JSON.parse(line);
+        
+        if (message.id !== undefined) {
+          if (this._pendingRequests.has(message.id)) {
+            const { resolve, reject } = this._pendingRequests.get(message.id);
+            this._pendingRequests.delete(message.id);
+            
+            if (message.error) {
+              reject(new Error(message.error.message || 'MCP Error'));
+            } else {
+              resolve(message.result);
+            }
           }
         }
-        // 通知消息忽略
-      } catch {
-        // 解析失败，忽略
+      } catch (err) {
+        // 忽略解析错误
       }
     }
   }
@@ -140,138 +152,64 @@ class MCPConnection {
   /**
    * 发送 JSON-RPC 请求
    */
-  _sendRequest(method, params = {}, timeoutMs = 30000) {
+  _sendRequest(method, params) {
     return new Promise((resolve, reject) => {
       const id = ++this._requestId;
-      const timer = setTimeout(() => {
-        this._pendingRequests.delete(id);
-        reject(new Error(`MCP 请求 ${method} 超时 (${timeoutMs}ms)`));
-      }, timeoutMs);
-      this._pendingRequests.set(id, {
-        resolve: (v) => { clearTimeout(timer); resolve(v); },
-        reject: (e) => { clearTimeout(timer); reject(e); },
-      });
-
-      const msg = JSON.stringify({
+      const message = {
         jsonrpc: '2.0',
         id,
         method,
         params,
-      });
+      };
 
-      this.process.stdin.write(msg + '\n');
+      this._pendingRequests.set(id, { resolve, reject });
+      
+      if (this.process && this.process.stdin) {
+        this.process.stdin.write(JSON.stringify(message) + '\n');
+      } else {
+        reject(new Error('MCP 进程未就绪'));
+      }
     });
   }
 
   /**
-   * 发送 JSON-RPC 通知（无需响应）
+   * 发送 JSON-RPC 通知
    */
-  _sendNotification(method, params = {}) {
-    const msg = JSON.stringify({
+  _sendNotification(method, params) {
+    const message = {
       jsonrpc: '2.0',
       method,
       params,
-    });
-    this.process.stdin.write(msg + '\n');
-  }
-
-  /**
-   * 发现服务器提供的工具
-   */
-  async _discoverTools() {
-    try {
-      const result = await this._sendRequest('tools/list', {});
-      this.tools = (result.tools || []).map(tool => ({
-        ...tool,
-        _mcpServer: this.name,
-      }));
-    } catch {
-      this.tools = [];
+    };
+    if (this.process && this.process.stdin) {
+      this.process.stdin.write(JSON.stringify(message) + '\n');
     }
-  }
-
-  /**
-   * 调用一个工具
-   */
-  async callTool(toolName, args) {
-    if (!this.connected) {
-      throw new Error(`MCP 服务器 ${this.name} 未连接`);
-    }
-
-    const result = await this._sendRequest('tools/call', {
-      name: toolName,
-      arguments: args,
-    });
-
-    // 提取文本内容
-    if (result.content && Array.isArray(result.content)) {
-      return result.content
-        .filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n');
-    }
-
-    return JSON.stringify(result);
-  }
-
-  /**
-   * 断开连接
-   */
-  disconnect() {
-    if (this.process) {
-      this.process.stdin.end();
-      this.process.kill();
-      this.process = null;
-    }
-    this.connected = false;
-    for (const { reject } of this._pendingRequests.values()) {
-      reject(new Error(`MCP 服务器 ${this.name} 已断开`));
-    }
-    this._pendingRequests.clear();
   }
 }
 
-// ────────────────────── MCP 管理器 ──────────────────────
-
-let connections = new Map();
-
-/**
- * 加载 MCP 配置
- */
-async function loadMCPConfig() {
-  try {
-    const data = await fs.readFile(MCP_CONFIG_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
-}
+// 全局连接池
+const connections = new Map();
 
 /**
  * 连接所有配置的 MCP 服务器
  */
-export async function connectMCPServers() {
-  const mcpConfig = await loadMCPConfig();
-  if (!mcpConfig?.mcpServers) return [];
+export async function connectMCPServers(mcpConfig) {
+  if (!mcpConfig) return [];
 
   const results = [];
 
-  for (const [name, serverConfig] of Object.entries(mcpConfig.mcpServers)) {
-    const conn = new MCPConnection(name, serverConfig);
+  for (const [name, config] of Object.entries(mcpConfig)) {
+    if (connections.has(name)) {
+      connections.get(name).disconnect();
+    }
+
+    const conn = new MCPConnection(name, config);
     try {
       await conn.connect();
       connections.set(name, conn);
-      results.push({
-        name,
-        status: 'connected',
-        tools: conn.tools.map(t => t.name),
-      });
+      results.push({ name, status: 'connected', tools: conn.tools });
     } catch (err) {
-      results.push({
-        name,
-        status: 'failed',
-        error: err.message,
-      });
+      results.push({ name, status: 'error', error: err.message });
     }
   }
 
@@ -279,58 +217,9 @@ export async function connectMCPServers() {
 }
 
 /**
- * 获取所有已连接服务器的工具列表
- * 返回 OpenAI function calling 格式的工具定义
+ * 断开所有连接
  */
-export function getMCPToolDefinitions() {
-  const tools = [];
-
-  for (const [serverName, conn] of connections) {
-    if (!conn.connected) continue;
-
-    for (const tool of conn.tools) {
-      tools.push({
-        type: 'function',
-        function: {
-          name: `mcp_${serverName}_${tool.name}`,
-          description: `[MCP: ${serverName}] ${tool.description || tool.name}`,
-          parameters: tool.inputSchema || { type: 'object', properties: {} },
-        },
-        _mcpServer: serverName,
-        _mcpToolName: tool.name,
-      });
-    }
-  }
-
-  return tools;
-}
-
-/**
- * 判断一个工具名称是否是 MCP 工具
- */
-export function isMCPTool(toolName) {
-  return toolName.startsWith('mcp_');
-}
-
-/**
- * 执行 MCP 工具调用
- */
-export async function executeMCPTool(toolName, args) {
-  for (const [serverName, conn] of connections) {
-    const prefix = `mcp_${serverName}_`;
-    if (toolName.startsWith(prefix)) {
-      const actualToolName = toolName.slice(prefix.length);
-      return await conn.callTool(actualToolName, args);
-    }
-  }
-
-  throw new Error(`未找到 MCP 工具: ${toolName}`);
-}
-
-/**
- * 断开所有 MCP 连接
- */
-export function disconnectAll() {
+export async function disconnectAll() {
   for (const conn of connections.values()) {
     conn.disconnect();
   }
@@ -338,46 +227,74 @@ export function disconnectAll() {
 }
 
 /**
- * 获取 MCP 连接状态
+ * 获取所有 MCP 工具定义（转换为 OpenAI 格式）
  */
-export function getMCPStatus() {
-  const status = [];
-  for (const [name, conn] of connections) {
-    status.push({
-      name,
-      connected: conn.connected,
-      toolCount: conn.tools.length,
-      tools: conn.tools.map(t => t.name),
-    });
+export function getMCPToolDefinitions() {
+  const definitions = [];
+
+  for (const [serverName, conn] of connections.entries()) {
+    if (!conn.connected) continue;
+
+    for (const tool of conn.tools) {
+      // 为工具名加上前缀，避免冲突
+      const toolName = `mcp_${serverName}_${tool.name}`;
+      
+      definitions.push({
+        type: 'function',
+        function: {
+          name: toolName,
+          description: `[MCP: ${serverName}] ${tool.description || ''}`,
+          parameters: tool.inputSchema || { type: 'object', properties: {} },
+        },
+        // 附加原始信息，执行时需要
+        _mcpServer: serverName,
+        _mcpToolName: tool.name,
+      });
+    }
   }
-  return status;
+
+  return definitions;
 }
 
 /**
- * 检查是否有 MCP 配置
+ * 检查是否是 MCP 工具
  */
-export async function hasMCPConfig() {
+export function isMCPTool(name) {
+  return name.startsWith('mcp_');
+}
+
+/**
+ * 执行 MCP 工具
+ */
+export async function executeMCPTool(name, args) {
+  // 解析出服务器名和原始工具名
+  // 格式: mcp_serverName_toolName
+  const parts = name.split('_');
+  if (parts.length < 3) {
+    return `无效的 MCP 工具名称: ${name}`;
+  }
+
+  const serverName = parts[1];
+  const toolName = parts.slice(2).join('_');
+
+  const conn = connections.get(serverName);
+  if (!conn || !conn.connected) {
+    return `MCP 服务器 ${serverName} 未连接`;
+  }
+
   try {
-    await fs.access(MCP_CONFIG_FILE);
-    return true;
-  } catch {
-    return false;
+    const result = await conn.callTool(toolName, args);
+    
+    // 格式化结果
+    if (result && result.content && Array.isArray(result.content)) {
+      return result.content.map(c => {
+        if (c.type === 'text') return c.text;
+        return `[${c.type} content]`;
+      }).join('\n');
+    }
+    
+    return JSON.stringify(result);
+  } catch (err) {
+    return `执行 MCP 工具失败: ${err.message}`;
   }
-}
-
-/**
- * 构建 MCP 状态提示词
- */
-export function buildMCPPrompt() {
-  const status = getMCPStatus();
-  if (status.length === 0) return '';
-
-  const lines = ['你已连接以下 MCP 扩展服务器：\n'];
-  for (const s of status) {
-    const state = s.connected ? '✅' : '❌';
-    lines.push(`- ${state} **${s.name}** (${s.toolCount} 个工具): ${s.tools.join(', ')}`);
-  }
-  lines.push('\n使用 MCP 工具时，工具名格式为 `mcp_{服务器名}_{工具名}`。');
-
-  return lines.join('\n');
 }

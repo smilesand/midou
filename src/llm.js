@@ -1,14 +1,13 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import config from '../midou.config.js';
-import { getModeMaxTokens, getModeTemperature } from './mode.js';
 
 export class LLMClient {
   constructor(options = {}) {
     this.provider = options.provider || config.llm.provider;
     this.model = options.model || config.llm.model;
-    this.temperature = options.temperature !== undefined ? options.temperature : getModeTemperature();
-    this.maxTokens = options.maxTokens || getModeMaxTokens();
+    this.temperature = options.temperature !== undefined ? options.temperature : config.llm.temperature || 0.7;
+    this.maxTokens = options.maxTokens || config.llm.maxTokens || 4096;
     
     if (this.provider === 'anthropic') {
       const apiKey = options.apiKey || config.llm.anthropic.apiKey;

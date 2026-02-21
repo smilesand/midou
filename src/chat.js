@@ -15,8 +15,7 @@ import chalk from 'chalk';
 import { LLMClient } from './llm.js';
 import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
-import { SessionMemory, logConversation } from './memory.js';
-import { filterToolsByMode, getJournalStrategy } from './mode.js';
+import { SessionMemory } from './memory.js';
 
 /**
  * 默认输出处理器 — 直接写入 stdout（保持原有行为）
@@ -141,8 +140,7 @@ export class ChatEngine {
    */
   _getTools() {
     const mcpTools = getMCPToolDefinitions();
-    const all = [...toolDefinitions, ...mcpTools];
-    return filterToolsByMode(all);
+    return [...toolDefinitions, ...mcpTools];
   }
 
   /**
@@ -161,13 +159,6 @@ export class ChatEngine {
       this.session.add('user', userMessage);
 
       let response = await this._thinkWithTools();
-
-      // 模式感知日记记录
-      const strategy = getJournalStrategy();
-      const logResponse = strategy.truncateResponse > 0 && response.length > strategy.truncateResponse
-        ? response.slice(0, strategy.truncateResponse) + '…'
-        : response;
-      await logConversation(userMessage, logResponse);
 
       return response;
     } finally {
@@ -366,7 +357,7 @@ export class ChatEngine {
     let isCompleted = false;
 
     try {
-      for await (const event of chatStreamWithTools(messages, [])) {
+      for await (const event of this.llmClient.chatStreamWithTools(messages, [])) {
         if (event.type === 'text_delta') {
           this.output.onTextDelta(event.text);
           fullResponse += event.text;

@@ -5,10 +5,8 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { SystemManager } from './system.js';
-import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
 import { disconnectAll as disconnectMCP } from './mcp.js';
-import config, { MIDOU_COMPANY_DIR } from '../midou.config.js';
-import { isInitialized, initSoulDir, migrateFromWorkspace } from './init.js';
+import { MIDOU_COMPANY_DIR } from '../midou.config.js';
 
 const app = express();
 app.use(cors());
@@ -29,16 +27,12 @@ const io = new Server(httpServer, {
 let systemManager = null;
 
 async function bootstrap() {
-  if (!isInitialized()) {
-    console.log('Initializing Midou directory structure...');
-    initSoulDir();
-    migrateFromWorkspace();
+  if (!fs.existsSync(MIDOU_COMPANY_DIR)) {
+    fs.mkdirSync(MIDOU_COMPANY_DIR, { recursive: true });
   }
 
   systemManager = new SystemManager(io);
   await systemManager.init();
-  
-  startHeartbeat();
   
   console.log('Midou backend initialized successfully.');
 }
@@ -105,7 +99,6 @@ bootstrap().then(() => {
 
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
-  stopHeartbeat();
   if (systemManager) {
     systemManager.stopAllCronJobs();
   }
