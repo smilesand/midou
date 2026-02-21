@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { SystemManager } from './system.js';
 import { disconnectAll as disconnectMCP } from './mcp.js';
-import { MIDOU_COMPANY_DIR } from '../midou.config.js';
+import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 
 const app = express();
 app.use(cors());
@@ -27,8 +27,8 @@ const io = new Server(httpServer, {
 let systemManager = null;
 
 async function bootstrap() {
-  if (!fs.existsSync(MIDOU_COMPANY_DIR)) {
-    fs.mkdirSync(MIDOU_COMPANY_DIR, { recursive: true });
+  if (!fs.existsSync(MIDOU_WORKSPACE_DIR)) {
+    fs.mkdirSync(MIDOU_WORKSPACE_DIR, { recursive: true });
   }
 
   systemManager = new SystemManager(io);
@@ -61,7 +61,7 @@ io.on('connection', (socket) => {
 
 // API Routes for Graph Editor
 app.get('/api/system', (req, res) => {
-  const systemPath = path.join(MIDOU_COMPANY_DIR, 'system.json');
+  const systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
   if (fs.existsSync(systemPath)) {
     res.json(JSON.parse(fs.readFileSync(systemPath, 'utf-8')));
   } else {
@@ -70,7 +70,7 @@ app.get('/api/system', (req, res) => {
 });
 
 app.post('/api/system', async (req, res) => {
-  const systemPath = path.join(MIDOU_COMPANY_DIR, 'system.json');
+  const systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
   fs.writeFileSync(systemPath, JSON.stringify(req.body, null, 2));
   
   // Reload system dynamically

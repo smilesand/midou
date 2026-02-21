@@ -8,108 +8,29 @@
  * - 功耗模式感知
  * - 智能会话记忆管理（带上下文摘要）
  * - 多轮对话
- * - 可插拔的输出处理器（支持 stdout / blessed UI）
+ * - 可插拔的输出处理器
  */
 
-import chalk from 'chalk';
 import { LLMClient } from './llm.js';
 import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory } from './memory.js';
 
-/**
- * 默认输出处理器 — 直接写入 stdout（保持原有行为）
- */
-export class StdoutOutputHandler {
-  onThinkingStart() {
-    const w = Math.min(process.stdout.columns || 50, 50);
-    process.stdout.write('\n' + chalk.hex('#C9B1FF')('  ┌─ 💭 ') + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 10))) + '\n');
-    process.stdout.write(chalk.hex('#C9B1FF').dim('  │ '));
-  }
-
-  onThinkingDelta(text) {
-    const lines = text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (i > 0) {
-        process.stdout.write(chalk.hex('#C9B1FF').dim('\n  │ '));
-      }
-      process.stdout.write(chalk.hex('#C9B1FF').dim(lines[i]));
-    }
-  }
-
-  onThinkingEnd(fullText) {
-    if (fullText) {
-      const w = Math.min(process.stdout.columns || 50, 50);
-      process.stdout.write(chalk.hex('#C9B1FF').dim(`\n  └─ ${fullText.length} 字 `) + chalk.hex('#C9B1FF').dim('─'.repeat(Math.max(0, w - 8 - String(fullText.length).length))) + '\n\n');
-    }
-  }
-
-  onThinkingHidden(length) {
-    process.stdout.write(chalk.hex('#C9B1FF').dim(`  💭 ${length} 字 — /think 查看\n`));
-  }
-
-  onTextDelta(text) {
-    process.stdout.write(chalk.hex('#FFB347')(text));
-  }
-
-  onTextPartComplete() {
-    process.stdout.write('\n');
-  }
-
-  onTextComplete(truncated = false) {
-    process.stdout.write('\n');
-    if (truncated) {
-      process.stdout.write(chalk.yellow('  ⚠ 输出可能因 token 限制被截断。\n'));
-      process.stdout.write(chalk.yellow('  💡 输入 "继续" 或使用 /mode full 切换到全能模式获取更长回复\n'));
-    }
-  }
-
-  onToolStart(name) {
-    const isMCP = name.startsWith('mcp_');
-    const icon = isMCP ? '🔌' : '⚙';
-    process.stdout.write(chalk.hex('#7FDBFF').dim(`\n  ${icon}  ${name} `));
-  }
-
-  onToolEnd(name, input) {
-    process.stdout.write(chalk.hex('#7FDBFF').dim(`${JSON.stringify(input).slice(0, 50)}\n`));
-  }
-
-  onToolExec(name) {
-    process.stdout.write(chalk.hex('#7FDBFF').dim(`  ↳ ${name} `));
-  }
-
-  onToolResult() {
-    process.stdout.write(chalk.green.dim('✓') + '\n');
-  }
-
-  onError(message) {
-    console.error(chalk.yellow(`  ⚠  ${message}`));
-  }
-
-  async confirmCommand(command) {
-    // readline 模式也需要用户确认命令
-    const readline = await import('readline');
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    return new Promise((resolve) => {
-      console.log('');
-      console.log(chalk.yellow.bold('  ⚠ 命令确认'));
-      console.log(chalk.dim('  即将执行以下命令:'));
-      console.log(chalk.cyan(`  $ ${command}`));
-      rl.question(chalk.dim('  确认执行? [y/N] '), (answer) => {
-        rl.close();
-        const confirmed = answer.trim().toLowerCase() === 'y';
-        if (!confirmed) {
-          console.log(chalk.dim('  已拒绝'));
-        }
-        resolve(confirmed);
-      });
-    });
-  }
-}
+const dummyOutputHandler = {
+  onThinkingStart: () => {},
+  onThinkingDelta: () => {},
+  onThinkingEnd: () => {},
+  onThinkingHidden: () => {},
+  onTextDelta: () => {},
+  onTextPartComplete: () => {},
+  onTextComplete: () => {},
+  onToolStart: () => {},
+  onToolEnd: () => {},
+  onToolExec: () => {},
+  onToolResult: () => {},
+  onError: () => {},
+  confirmCommand: async () => true
+};
 
 /**
  * 对话引擎
@@ -117,22 +38,24 @@ export class StdoutOutputHandler {
 export class ChatEngine {
   /**
    * @param {string} systemPrompt - 系统提示词
-   * @param {object} outputHandler - 输出处理器（默认 stdout）
+   * @param {object} outputHandler - 输出处理器
    * @param {object} llmConfig - LLM 配置
+   * @param {object} systemManager - 系统管理器
    */
-  constructor(systemPrompt, outputHandler = null, llmConfig = {}) {
+  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null) {
     this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
     this.showThinking = true;
     this.lastThinking = '';
-    this.output = outputHandler || new StdoutOutputHandler();
+    this.output = outputHandler || dummyOutputHandler;
     this.isBusy = false;
     this.llmClient = new LLMClient(llmConfig);
+    this.systemManager = systemManager;
   }
 
   setOutputHandler(handler) {
-    this.output = handler;
+    this.output = handler || dummyOutputHandler;
   }
 
   /**
@@ -148,7 +71,7 @@ export class ChatEngine {
    */
   async talk(userMessage) {
     if (this.isBusy) {
-      const busyMsg = '🐱 喵~ 咪豆还在思考中，请稍等一下哦…';
+      const busyMsg = '还在思考中，请稍等一下哦…';
       this.output.onTextDelta(busyMsg + '\n');
       return busyMsg;
     }
@@ -293,7 +216,7 @@ export class ChatEngine {
 
           let result;
           try {
-            result = await executeTool(tc.function.name, args, { output: this.output });
+            result = await executeTool(tc.function.name, args, this.systemManager);
             this.output.onToolResult();
           } catch (e) {
             result = `工具执行出错: ${e.message}`;
@@ -368,7 +291,7 @@ export class ChatEngine {
 
       const naturalStops = ['end_turn', 'stop', 'stop_sequence'];
       const isTruncated = stopReason === 'max_tokens' || (stopReason && !naturalStops.includes(stopReason));
-
+      
       this.output.onTextComplete(isTruncated);
       isCompleted = true;
       if (fullResponse) {

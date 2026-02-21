@@ -5,13 +5,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { MIDOU_COMPANY_DIR } from '../midou.config.js';
+import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 
 // 技能搜索路径
 const SKILL_SEARCH_PATHS = [
   path.join(os.homedir(), '.claude', 'skills'),
   path.join(os.homedir(), '.agents', 'skills'),
-  path.join(MIDOU_COMPANY_DIR, 'skills'),
+  path.join(MIDOU_WORKSPACE_DIR, 'skills'),
 ];
 
 let skillsCache = null;

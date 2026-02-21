@@ -1,3 +1,143 @@
+import fs from 'fs/promises';
+import path from 'path';
+import dayjs from 'dayjs';
+import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
+
+/**
+ * 辅助函数：读取文件
+ */
+async function readFile(relativePath) {
+  try {
+    const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
+    return await fs.readFile(fullPath, 'utf-8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
+ * 辅助函数：写入文件
+ */
+async function writeFile(relativePath, content) {
+  const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
+  await fs.mkdir(path.dirname(fullPath), { recursive: true });
+  await fs.writeFile(fullPath, content, 'utf-8');
+}
+
+/**
+ * 辅助函数：追加文件
+ */
+async function appendFile(relativePath, content) {
+  const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
+  await fs.mkdir(path.dirname(fullPath), { recursive: true });
+  await fs.appendFile(fullPath, content, 'utf-8');
+}
+
+/**
+ * 辅助函数：列出目录
+ */
+async function listDir(relativePath) {
+  try {
+    const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
+    return await fs.readdir(fullPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * 获取今天的日期字符串
+ */
+export function today() {
+  return dayjs().format('YYYY-MM-DD');
+}
+
+/**
+ * 获取今日日记的路径
+ */
+export function todayJournalPath() {
+  return `memory/${today()}.md`;
+}
+
+/**
+ * 写入今日日记（追加）
+ */
+export async function writeJournal(content) {
+  const journalPath = todayJournalPath();
+  const existing = await readFile(journalPath);
+
+  if (!existing) {
+    // 创建新的日记，带标题
+    const header = `# ${today()} 日记\n\n`;
+    await writeFile(journalPath, header + content + '\n\n');
+  } else {
+    await appendFile(journalPath, content + '\n\n');
+  }
+}
+
+/**
+ * 记录一次对话到日记
+ */
+export async function logConversation(userMessage, assistantMessage) {
+  const time = dayjs().format('HH:mm');
+  const entry = `### ${time}\n\n**用户**: ${userMessage}\n\n**midou**: ${assistantMessage}\n`;
+  await writeJournal(entry);
+}
+
+/**
+ * 读取最近几天的日记（带长度限制）
+ */
+export async function getRecentMemories(days = 2) {
+  const memories = [];
+
+  for (let i = 0; i < days; i++) {
+    const date = dayjs().subtract(i, 'day').format('YYYY-MM-DD');
+    const journal = await readFile(`memory/${date}.md`);
+    if (journal) {
+      memories.push(journal);
+    }
+  }
+
+  const combined = memories.join('\n\n---\n\n');
+  
+  // 限制长度，只保留最近的部分（假设越靠后越新）
+  const MAX_JOURNAL_LENGTH = 5000;
+  if (combined.length > MAX_JOURNAL_LENGTH) {
+    return '…' + combined.slice(-MAX_JOURNAL_LENGTH);
+  }
+  
+  return combined;
+}
+
+/**
+ * 读取长期记忆
+ */
+export async function getLongTermMemory() {
+  return await readFile('MEMORY.md') || '';
+}
+
+/**
+ * 写入长期记忆（追加一条新记忆）
+ */
+export async function addLongTermMemory(content) {
+  const timestamp = dayjs().format('YYYY-MM-DD HH:mm');
+  const entry = `\n### ${timestamp}\n\n${content}\n`;
+  await appendFile('MEMORY.md', entry);
+}
+
+/**
+ * 获取所有日记文件列表
+ */
+export async function listJournals() {
+  const files = await listDir('memory');
+  return files
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .reverse();
+}
+
 /**
  * 会话记忆管理器 — 管理当前会话中的对话历史
  *

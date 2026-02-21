@@ -9,11 +9,11 @@ import dotenv from 'dotenv';
 const __filename = fileURLToPath(import.meta.url);
 export const MIDOU_PKG = path.dirname(__filename);
 
-// MIDOU_COMPANY_DIR — 公司总部（公共资产 / 通信总线 / 全局配置）
-export const MIDOU_COMPANY_DIR = process.env.MIDOU_COMPANY_DIR || path.join(os.homedir(), '.midou');
+// MIDOU_WORKSPACE_DIR — 组织总部（公共资产 / 通信总线 / 全局配置）
+export const MIDOU_WORKSPACE_DIR = process.env.MIDOU_WORKSPACE_DIR || path.join(os.homedir(), '.midou');
 
 // 加载全局 .env
-dotenv.config({ path: path.join(MIDOU_COMPANY_DIR, '.env') });
+dotenv.config({ path: path.join(MIDOU_WORKSPACE_DIR, '.env') });
 
 export default {
   // AI 模型配置
@@ -34,11 +34,11 @@ export default {
     },
   },
 
-  // 公司总部路径（公共资产 / 通信总线）
-  company: {
-    root: MIDOU_COMPANY_DIR,
-    assets: path.join(MIDOU_COMPANY_DIR, 'assets'),
-    communication: path.join(MIDOU_COMPANY_DIR, 'communication'),
+  // 组织总部路径（公共资产 / 通信总线）
+  workspace: {
+    root: MIDOU_WORKSPACE_DIR,
+    assets: path.join(MIDOU_WORKSPACE_DIR, 'assets'),
+    communication: path.join(MIDOU_WORKSPACE_DIR, 'communication'),
   },
 
   // midou 包的安装位置（源码位置，用于自我进化）

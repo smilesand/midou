@@ -51,26 +51,31 @@ onMounted(async () => {
       currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '' }
       messages.value.push(currentAssistantMessage)
     }
-    currentAssistantMessage.content = data.text
+    currentAssistantMessage.content += data.text
   })
 
   socket.on('message_end', (data) => {
     if (currentAssistantMessage) {
-      currentAssistantMessage.content = data.fullText
       currentAssistantMessage = null
     }
   })
 
   socket.on('thinking_start', (data) => {
     if (!currentAssistantMessage) {
-      currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '💭 Thinking...' }
+      currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '<details><summary>💭 Thinking...</summary>\n\n' }
       messages.value.push(currentAssistantMessage)
     }
   })
 
+  socket.on('thinking_delta', (data) => {
+    if (currentAssistantMessage) {
+      currentAssistantMessage.content += data.text
+    }
+  })
+
   socket.on('thinking_end', () => {
-    if (currentAssistantMessage && currentAssistantMessage.content === '💭 Thinking...') {
-      currentAssistantMessage.content = ''
+    if (currentAssistantMessage) {
+      currentAssistantMessage.content += '\n\n</details>\n\n'
     }
   })
 

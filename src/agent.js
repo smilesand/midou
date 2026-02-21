@@ -2,7 +2,8 @@ import path from 'path';
 import fs from 'fs/promises';
 import { ChatEngine } from './chat.js';
 import { buildSkillsPrompt } from './skills.js';
-import { MIDOU_COMPANY_DIR } from '../midou.config.js';
+import { logConversation } from './memory.js';
+import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 
 export class Agent {
   constructor(config, systemManager) {
@@ -10,7 +11,7 @@ export class Agent {
     this.name = config.name || 'Agent';
     this.config = config.data || {};
     this.systemManager = systemManager;
-    this.workspaceDir = path.join(MIDOU_COMPANY_DIR, 'agents', this.id);
+    this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.id);
     this.engine = null;
     this.isBusy = false;
   }
@@ -27,6 +28,23 @@ export class Agent {
       systemPrompt += `\n\n=== 你的技能 ===\n${skillsPrompt}`;
     }
     
+    // Append organization roster
+    const roster = this.systemManager.getOrganizationRoster();
+    if (roster) {
+      systemPrompt += `\n\n=== 组织花名册 ===\n${roster}`;
+    }
+    
+    // Append SOUL.md if it exists
+    try {
+      const soulPath = path.join(MIDOU_WORKSPACE_DIR, 'SOUL.md');
+      const soulContent = await fs.readFile(soulPath, 'utf-8');
+      if (soulContent) {
+        systemPrompt += `\n\n=== 核心准则 (SOUL) ===\n${soulContent}`;
+      }
+    } catch (error) {
+      // Ignore if SOUL.md doesn't exist
+    }
+    
     const llmConfig = {
       provider: this.config.provider || undefined,
       model: this.config.model || undefined,
@@ -35,7 +53,7 @@ export class Agent {
     };
 
     // Initialize ChatEngine
-    this.engine = new ChatEngine(systemPrompt, null, llmConfig);
+    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager);
     
     // Override output handler to route messages through SystemManager
     this.engine.setOutputHandler({
@@ -46,7 +64,7 @@ export class Agent {
       onTextDelta: (text) => {
         if (!this._currentText) this._currentText = '';
         this._currentText += text;
-        this.systemManager.emitEvent('message_delta', { agentId: this.id, text: this._currentText });
+        this.systemManager.emitEvent('message_delta', { agentId: this.id, text: text });
       },
       onTextPartComplete: () => {},
       onTextComplete: (truncated) => {
@@ -69,7 +87,8 @@ export class Agent {
     if (this.isBusy) return;
     this.isBusy = true;
     try {
-      await this.engine.talk(message);
+      const response = await this.engine.talk(message);
+      await logConversation(message, response);
     } catch (error) {
       this.systemManager.emitEvent('error', { agentId: this.id, message: error.message });
     } finally {

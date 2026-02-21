@@ -37,64 +37,15 @@ export function clearTodoItems() {
  * 工具定义（OpenAI Function Calling 格式）
  */
 export const toolDefinitions = [
-  // ── 公司协作与通信 ──────────────────────────────
+  // ── 组织协作与通信 ──────────────────────────────
   {
     type: 'function',
     function: {
-      name: 'read_company_roster',
-      description: '读取公司花名册，了解公司里有哪些 Agent，以及他们各自的角色和能力。',
+      name: 'read_organization_roster',
+      description: '读取组织花名册，了解组织里有哪些 Agent，以及他们各自的角色和能力。',
       parameters: {
         type: 'object',
         properties: {},
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'send_message',
-      description: '给公司里的其他 Agent 发送消息或派发任务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          to: {
-            type: 'string',
-            description: '目标 Agent 的名字（如 coder, researcher）',
-          },
-          message: {
-            type: 'string',
-            description: '消息内容或任务描述',
-          },
-        },
-        required: ['to', 'message'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_inbox',
-      description: '读取自己的收件箱，查看其他 Agent 发来的消息或任务。',
-      parameters: {
-        type: 'object',
-        properties: {},
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'delete_message',
-      description: '删除收件箱中的某条消息。',
-      parameters: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: '消息 ID',
-          },
-        },
-        required: ['id'],
       },
     },
   },
@@ -290,21 +241,18 @@ export const toolDefinitions = [
 /**
  * 执行工具调用
  */
-export async function executeTool(name, args, confirmCallback) {
+export async function executeTool(name, args, systemManager) {
   if (isMCPTool(name)) {
     return await executeMCPTool(name, args);
   }
 
   switch (name) {
-    // ── 公司协作与通信 ──
-    case 'read_company_roster':
-      return '公司花名册功能尚未完全实现。';
-    case 'send_message':
-      return `已发送消息给 ${args.to}: ${args.message}`;
-    case 'read_inbox':
-      return '收件箱为空。';
-    case 'delete_message':
-      return `已删除消息 ${args.id}`;
+    // ── 组织协作与通信 ──
+    case 'read_organization_roster':
+      if (systemManager) {
+        return systemManager.getOrganizationRoster();
+      }
+      return '组织花名册功能尚未完全实现。';
 
     // ── 技能系统 ──
     case 'list_skills': {
@@ -323,12 +271,7 @@ export async function executeTool(name, args, confirmCallback) {
       if (safeCheck === 'SUDO_BLOCKED') {
         return '⚠️ 该命令需要管理员权限。出于安全考虑，绝对禁止向用户索要密码。请直接将需要执行的命令输出给用户，让用户自己在一个安全的终端中手动执行。';
       } else if (!safeCheck) {
-        return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知主人手动操作。';
-      }
-      
-      if (confirmCallback) {
-        const confirmed = await confirmCallback(`执行命令: ${args.command}`);
-        if (!confirmed) return '用户取消了命令执行。';
+        return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知用户手动操作。';
       }
 
       const result = await runShellCommand(args.command, {

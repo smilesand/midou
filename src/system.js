@@ -3,7 +3,8 @@ import path from 'path';
 import cron from 'node-cron';
 import { Agent } from './agent.js';
 import { connectMCPServers, disconnectAll as disconnectMCP } from './mcp.js';
-import { MIDOU_COMPANY_DIR } from '../midou.config.js';
+import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
+import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
 
 export class SystemManager {
   constructor(io) {
@@ -11,7 +12,7 @@ export class SystemManager {
     this.agents = new Map();
     this.connections = [];
     this.cronJobs = new Map();
-    this.systemPath = path.join(MIDOU_COMPANY_DIR, 'system.json');
+    this.systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
   }
 
   async init() {
@@ -25,6 +26,7 @@ export class SystemManager {
       
       // Clear existing
       this.stopAllCronJobs();
+      stopHeartbeat();
       this.agents.clear();
       this.connections = system.connections || [];
       await disconnectMCP();
@@ -52,6 +54,10 @@ export class SystemManager {
           this.setupCronJob(agent.id, agentConfig.data.cron, 'System: Scheduled activation triggered.');
         }
       }
+      
+      // Start global heartbeat (e.g., every 60 minutes)
+      startHeartbeat(this, 60);
+      
       console.log(`System loaded with ${this.agents.size} agents and ${this.connections.length} connections.`);
     } catch (error) {
       console.log('No system.json found or error parsing, starting empty system.', error);
@@ -87,6 +93,16 @@ export class SystemManager {
       }
     }
     this.cronJobs.clear();
+  }
+
+  getOrganizationRoster() {
+    if (this.agents.size === 0) return '目前组织里没有其他 Agent。';
+    
+    let roster = '组织花名册：\n';
+    for (const [id, agent] of this.agents.entries()) {
+      roster += `- [${id}] ${agent.name}: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
+    }
+    return roster;
   }
 
   emitEvent(event, data) {

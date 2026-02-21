@@ -5,7 +5,7 @@
       <button @click="saveSystem" :disabled="isSaving">
         {{ isSaving ? 'Saving...' : 'Save System' }}
       </button>
-      <button @click="showMcpConfig = true">Configure MCP</button>
+      <button @click="openMcpConfig">Configure MCP</button>
     </div>
     
     <div class="editor-container">
@@ -82,30 +82,20 @@
       <!-- MCP Config Modal -->
       <div v-if="showMcpConfig" class="modal-overlay">
         <div class="modal-content">
-          <h3>MCP Servers Configuration</h3>
-          <div class="mcp-servers-list">
-            <div v-for="(server, name) in mcpServers" :key="name" class="mcp-server-item">
-              <h4>{{ name }}</h4>
-              <div class="form-group">
-                <label>Command:</label>
-                <input v-model="server.command" />
-              </div>
-              <div class="form-group">
-                <label>Args (JSON array):</label>
-                <input :value="JSON.stringify(server.args)" @change="e => updateMcpArgs(name, e.target.value)" />
-              </div>
-              <button @click="removeMcpServer(name)" class="btn-remove">Remove Server</button>
-            </div>
+          <h3>MCP Servers Configuration (JSON)</h3>
+          <div class="form-group">
+            <textarea 
+              v-model="mcpServersJson" 
+              rows="15" 
+              style="font-family: monospace; width: 100%;"
+              placeholder='{\n  "server-name": {\n    "command": "npx",\n    "args": ["..."]\n  }\n}'
+            ></textarea>
           </div>
-          
-          <div class="add-mcp-server">
-            <h4>Add New Server</h4>
-            <input v-model="newMcpName" placeholder="Server Name" />
-            <button @click="addMcpServer">Add</button>
-          </div>
+          <div v-if="mcpJsonError" class="error-text">{{ mcpJsonError }}</div>
           
           <div class="modal-actions">
-            <button @click="showMcpConfig = false">Close</button>
+            <button @click="saveMcpConfig" class="btn-save">Save & Restart MCP</button>
+            <button @click="showMcpConfig = false">Cancel</button>
           </div>
         </div>
       </div>
@@ -130,13 +120,17 @@ const selectedEdge = ref(null)
 const isSaving = ref(false)
 const showMcpConfig = ref(false)
 const mcpServers = ref({})
-const newMcpName = ref('')
+const mcpServersJson = ref('{}')
+const mcpJsonError = ref('')
 
 let nodeId = 1
 
 onMounted(async () => {
   try {
     const response = await fetch('/api/system')
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
     const data = await response.json()
     
     const nodes = (data.agents || []).map(agent => ({
@@ -234,25 +228,20 @@ const removeEdge = () => {
   }
 }
 
-const addMcpServer = () => {
-  if (newMcpName.value && !mcpServers.value[newMcpName.value]) {
-    mcpServers.value[newMcpName.value] = {
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-everything']
-    }
-    newMcpName.value = ''
-  }
+const openMcpConfig = () => {
+  mcpServersJson.value = JSON.stringify(mcpServers.value, null, 2)
+  mcpJsonError.value = ''
+  showMcpConfig.value = true
 }
 
-const removeMcpServer = (name) => {
-  delete mcpServers.value[name]
-}
-
-const updateMcpArgs = (name, valueStr) => {
+const saveMcpConfig = () => {
   try {
-    mcpServers.value[name].args = JSON.parse(valueStr)
+    const parsed = JSON.parse(mcpServersJson.value)
+    mcpServers.value = parsed
+    showMcpConfig.value = false
+    saveSystem() // Automatically save and restart
   } catch (e) {
-    console.error('Invalid JSON for args')
+    mcpJsonError.value = 'Invalid JSON format: ' + e.message
   }
 }
 
@@ -285,11 +274,15 @@ const saveSystem = async () => {
       mcpServers: mcpServers.value
     }
     
-    await fetch('/api/system', {
+    const response = await fetch('/api/system', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(system)
     })
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
     
     alert('System saved successfully!')
   } catch (error) {
@@ -464,5 +457,23 @@ const saveSystem = async () => {
 .modal-actions {
   margin-top: 20px;
   text-align: right;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.btn-save {
+  background: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.error-text {
+  color: #f44336;
+  margin-top: 10px;
+  font-size: 14px;
 }
 </style>
