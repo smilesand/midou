@@ -181,6 +181,20 @@ export class SessionMemory {
   }
 
   /**
+   * 移除最后一条消息
+   */
+  removeLast() {
+    if (this.messages.length > 0) {
+      const last = this.messages.pop();
+      if (last.role === 'user') {
+        this.totalTurns--;
+      }
+      return last;
+    }
+    return null;
+  }
+
+  /**
    * 智能压缩：保留系统消息和最近对话，压缩中间部分为摘要
    */
   _compress() {

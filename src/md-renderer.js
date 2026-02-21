@@ -3,11 +3,10 @@
  *
  * 核心算法：
  *   1. 缓冲区累积流式文本块
- *   2. 检测"完整的 markdown 块"（段落、标题、代码块、列表等）
+ *   2. 使用 marked.lexer 解析缓冲区，检测完整的 markdown 块
  *   3. 完整块立即通过 marked-terminal 渲染输出
  *   4. 未完成的块保留在缓冲区等待更多内容
- *   5. 超时保护：长时间未闭合的块强制渲染
- *   6. 流结束时 flush 剩余内容
+ *   5. 流结束时 flush 剩余内容
  */
 
 import { marked } from 'marked';
@@ -20,14 +19,27 @@ marked.use(
     reflowText: true,
     tab: 2,
     emoji: true,
+    showSectionPrefix: false, // 不显示原始的 # 前缀
   })
 );
 
-// 自定义链接渲染：显示链接文本和 URL
+// 自定义链接和标题渲染
 marked.use({
   renderer: {
-    link({ href, tokens }) {
-      const linkText = tokens ? this.parser.parseInline(tokens) : href;
+    heading({ tokens, depth, text }) {
+      const headingText = tokens ? this.parser.parseInline(tokens) : text;
+      // 根据层级添加不同的前缀符号，使其在终端中更像标题
+      const prefix = depth === 1 ? '█ ' : depth === 2 ? '▓ ' : depth === 3 ? '▒ ' : '░ ';
+      const styledText = `\x1b[1m${prefix}${headingText}\x1b[0m`;
+      
+      // 根据层级添加颜色
+      if (depth === 1) return `\x1b[35m${styledText}\x1b[39m\n\n`; // Magenta
+      if (depth === 2) return `\x1b[32m${styledText}\x1b[39m\n\n`; // Green
+      if (depth === 3) return `\x1b[33m${styledText}\x1b[39m\n\n`; // Yellow
+      return `\x1b[36m${styledText}\x1b[39m\n\n`; // Cyan
+    },
+    link({ href, tokens, text }) {
+      const linkText = tokens ? this.parser.parseInline(tokens) : text;
       if (linkText === href) {
         return `\x1b[4m\x1b[36m${href}\x1b[0m`;
       }
@@ -37,27 +49,12 @@ marked.use({
 });
 
 /**
- * 后处理：修复 marked-terminal 未渲染的 markdown 链接语法
- * 需要避免匹配 ANSI 转义序列中的 [ 字符
- */
-function postProcessLinks(text) {
-  // 负向后瞻确保 [ 前不是 ESC 字符（ANSI 序列的一部分）
-  return text.replace(/(?<!\x1b)\[([^\]\x1b]+)\]\((https?:\/\/[^)]+)\)/g, (_, linkText, href) => {
-    if (linkText === href) {
-      return `\x1b[4m\x1b[36m${href}\x1b[0m`;
-    }
-    return `\x1b[36m${linkText}\x1b[0m (\x1b[4m\x1b[90m${href}\x1b[0m)`;
-  });
-}
-
-/**
  * 渲染 markdown 文本为终端格式
  */
 export function renderMarkdown(text) {
   if (!text || !text.trim()) return '';
   try {
-    const rendered = marked.parse(text).replace(/\n+$/, '');
-    return postProcessLinks(rendered);
+    return marked.parse(text).replace(/\n+$/, '');
   } catch {
     return text;
   }
@@ -74,16 +71,10 @@ export function renderMarkdown(text) {
 export class IncrementalMDRenderer {
   /**
    * @param {function} onRendered - 当一个完整块渲染完成时的回调 (renderedText: string) => void
-   * @param {object} options
-   * @param {number} options.flushTimeout - 超时强制渲染时间（毫秒），默认 3000
    */
-  constructor(onRendered, options = {}) {
+  constructor(onRendered) {
     this.onRendered = onRendered;
     this.buffer = '';
-    this.inFencedCode = false;  // 是否在 ``` 代码块内
-    this.codeFence = '';        // 代码块围栏标记（``` 或 ~~~）
-    this.flushTimeout = options.flushTimeout || 3000;
-    this._timer = null;
     this._renderedBlocks = [];  // 已渲染块的记录
   }
 
@@ -92,7 +83,6 @@ export class IncrementalMDRenderer {
    */
   feed(chunk) {
     this.buffer += chunk;
-    this._resetTimer();
     this._tryExtractBlocks();
   }
 
@@ -100,7 +90,6 @@ export class IncrementalMDRenderer {
    * 流结束，强制渲染所有剩余内容
    */
   flush() {
-    this._clearTimer();
     if (this.buffer.trim()) {
       const rendered = renderMarkdown(this.buffer);
       if (rendered) {
@@ -109,18 +98,13 @@ export class IncrementalMDRenderer {
       }
       this.buffer = '';
     }
-    this.inFencedCode = false;
-    this.codeFence = '';
   }
 
   /**
    * 重置渲染器状态
    */
   reset() {
-    this._clearTimer();
     this.buffer = '';
-    this.inFencedCode = false;
-    this.codeFence = '';
     this._renderedBlocks = [];
   }
 
@@ -133,184 +117,30 @@ export class IncrementalMDRenderer {
 
   /**
    * 尝试从缓冲区提取并渲染完整的 markdown 块
-   *
-   * 块类型与完成判断：
-   *   - 标题 (# ...) → 行末完成
-   *   - 代码块 (```) → 闭合 ``` 完成
-   *   - 段落 → 空行分隔完成
-   *   - 列表 → 空行分隔完成
-   *   - 引用 → 空行分隔完成
-   *   - 分割线 → 行末完成
    */
   _tryExtractBlocks() {
-    // 代码块内部：只寻找闭合标记
-    if (this.inFencedCode) {
-      this._tryCloseCodeBlock();
-      return;
+    const tokens = marked.lexer(this.buffer);
+    
+    if (tokens.length <= 1) {
+      return; // 等待更多内容
     }
 
-    // 非代码块：按空行分割尝试提取
-    this._tryExtractByBlankLines();
-  }
+    // 除了最后一个 token，其他都是完整的块
+    const completeTokens = tokens.slice(0, -1);
+    const lastToken = tokens[tokens.length - 1];
 
-  /**
-   * 在代码块内寻找闭合标记
-   */
-  _tryCloseCodeBlock() {
-    const fence = this.codeFence;
-    const lines = this.buffer.split('\n');
-
-    for (let i = 0; i < lines.length; i++) {
-      const trimmed = lines[i].trim();
-      // 闭合标记：行首是代码围栏且至少与开启围栏等长
-      if (trimmed.startsWith(fence) && trimmed === fence) {
-        // 找到闭合 → 渲染整个代码块
-        const blockLines = lines.slice(0, i + 1);
-        const remainder = lines.slice(i + 1);
-        const blockText = blockLines.join('\n');
-
-        const rendered = renderMarkdown(blockText);
-        if (rendered) {
-          this.onRendered(rendered);
-          this._renderedBlocks.push(rendered);
-        }
-
-        this.buffer = remainder.join('\n');
-        this.inFencedCode = false;
-        this.codeFence = '';
-
-        // 继续尝试提取后续块
-        if (this.buffer.trim()) {
-          this._tryExtractBlocks();
-        }
-        return;
-      }
-    }
-    // 未找到闭合标记，等待更多内容
-  }
-
-  /**
-   * 按空行分割提取完整块
-   */
-  _tryExtractByBlankLines() {
-    // 寻找双换行符分隔的块
-    const parts = this.buffer.split(/\n\n/);
-
-    if (parts.length <= 1) {
-      // 没有空行分隔，检查是否有单行完成的块（如标题）
-      this._tryExtractSingleLineBlocks();
-      return;
-    }
-
-    // 检查最后一部分是否完整
-    // 除了最后一个 part，其他都是已完成的块
-    const completeParts = parts.slice(0, -1);
-    const lastPart = parts[parts.length - 1];
-
-    // 检查完整部分中是否包含未闭合的代码块
-    const combined = completeParts.join('\n\n');
-    const fenceInfo = this._detectCodeFence(combined);
-
-    if (fenceInfo.unclosed) {
-      // 存在未闭合代码块，不能渲染
-      this.inFencedCode = true;
-      this.codeFence = fenceInfo.fence;
-      return;
-    }
-
-    // 渲染完整的部分
-    if (combined.trim()) {
-      const rendered = renderMarkdown(combined);
+    for (const token of completeTokens) {
+      // 忽略纯空白 token
+      if (token.type === 'space') continue;
+      
+      const rendered = renderMarkdown(token.raw);
       if (rendered) {
         this.onRendered(rendered);
         this._renderedBlocks.push(rendered);
       }
     }
 
-    // 保留最后未完成的部分
-    this.buffer = lastPart;
-
-    // 检查剩余部分是否开始了代码块
-    const remainInfo = this._detectCodeFence(this.buffer);
-    if (remainInfo.unclosed) {
-      this.inFencedCode = true;
-      this.codeFence = remainInfo.fence;
-    }
-  }
-
-  /**
-   * 尝试提取单行完成的块（标题、分割线等）
-   */
-  _tryExtractSingleLineBlocks() {
-    // 只有在缓冲区以换行结尾且包含完整行时才处理
-    if (!this.buffer.includes('\n')) return;
-
-    const lines = this.buffer.split('\n');
-    // 如果最后一行不是空的（还在输入中），不处理
-    if (lines[lines.length - 1] !== '') return;
-
-    // 检查是否进入了代码块
-    const fenceMatch = lines[0].match(/^(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      this.inFencedCode = true;
-      this.codeFence = fenceMatch[1];
-      return;
-    }
-  }
-
-  /**
-   * 检测文本中的代码围栏状态
-   * @returns {{ unclosed: boolean, fence: string }}
-   */
-  _detectCodeFence(text) {
-    const lines = text.split('\n');
-    let inCode = false;
-    let fence = '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!inCode) {
-        const match = trimmed.match(/^(`{3,}|~{3,})/);
-        if (match) {
-          inCode = true;
-          fence = match[1].charAt(0).repeat(match[1].length);
-        }
-      } else {
-        // 检查是否是闭合标记
-        if (trimmed === fence || (trimmed.startsWith(fence) && trimmed.replace(/[`~]/g, '') === '')) {
-          inCode = false;
-          fence = '';
-        }
-      }
-    }
-
-    return { unclosed: inCode, fence };
-  }
-
-  /**
-   * 超时保护：长时间未完成的块强制渲染
-   */
-  _resetTimer() {
-    this._clearTimer();
-    this._timer = setTimeout(() => {
-      if (this.buffer.trim()) {
-        // 超时强制渲染当前缓冲区
-        const rendered = renderMarkdown(this.buffer);
-        if (rendered) {
-          this.onRendered(rendered);
-          this._renderedBlocks.push(rendered);
-        }
-        this.buffer = '';
-        this.inFencedCode = false;
-        this.codeFence = '';
-      }
-    }, this.flushTimeout);
-  }
-
-  _clearTimer() {
-    if (this._timer) {
-      clearTimeout(this._timer);
-      this._timer = null;
-    }
+    // 保留最后一个未完成的 token 在缓冲区
+    this.buffer = lastToken.raw;
   }
 }

@@ -185,6 +185,19 @@ export class BlessedOutputHandler {
     this._streamRenderer.feed(text);
   }
 
+  /**
+   * 中间文本完成（在工具调用前调用）
+   * 仅刷新渲染器，不标记任务结束
+   */
+  onTextPartComplete() {
+    this._stopSpinner();
+    if (this._streamRenderer) {
+      this._streamRenderer.flush();
+      this._streamRenderer = null;
+    }
+    // 状态保持，不打印完成线
+  }
+
   onTextComplete(truncated = false) {
     this._stopSpinner();
     if (this._streamRenderer) {
@@ -200,7 +213,8 @@ export class BlessedOutputHandler {
       this.ui.appendChat('{yellow-fg}⚠ 输出可能因 token 限制被截断。{/yellow-fg}');
       this.ui.appendChat('{yellow-fg}💡 输入 "继续" 或使用 /mode full 切换到全能模式获取更长回复。{/yellow-fg}');
     }
-    this.ui.appendChat('{#555555-fg}── ✓ 完成 ──{/#555555-fg}');
+    this.ui.appendChat('');
+    this.ui.appendChat('{green-fg}✨ ── AI 输出完毕，您可以继续输入 ── ✨{/green-fg}');
     this.ui.appendChat('');
     this.ui.updateStatus({ status: '就绪' });
   }
@@ -209,6 +223,7 @@ export class BlessedOutputHandler {
     const isMCP = name.startsWith('mcp_');
     const icon = isMCP ? '🔌' : '⚙';
     this._startSpinner(`执行 ${name}`);
+    this.ui.updateStatus({ status: `⚙ 执行 ${name}` });
     this.ui.appendChat(`{#7FDBFF-fg}┌─ ${icon} ${blessed.escape(name)}{/#7FDBFF-fg}`);
   }
 
@@ -225,6 +240,7 @@ export class BlessedOutputHandler {
     this._stopSpinner();
     this.ui.appendChat('{#7FDBFF-fg}└─ {green-fg}✓{/green-fg}{/#7FDBFF-fg}');
     this.ui.appendChat('');
+    this.ui.updateStatus({ status: '思考中...' });
     this.ui.refreshTodoPanel();
   }
 
