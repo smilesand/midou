@@ -17,6 +17,7 @@ import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory, logConversation } from './memory.js';
 import { filterToolsByMode, getJournalStrategy } from './mode.js';
+import { getTodoItems } from './ui.js';
 
 /**
  * 默认输出处理器 — 直接写入 stdout（保持原有行为）
@@ -176,7 +177,7 @@ export class ChatEngine {
     const messages = this.session.getMessages();
     let fullResponse = '';
     let iterations = 0;
-    const maxIterations = 10;
+    const maxIterations = 30; // 增加最大迭代次数以支持长 TODO 流程
     const tools = this._getTools();
     let isCompleted = false;
 
@@ -253,6 +254,19 @@ export class ChatEngine {
           if (iterationText) {
             this.session.add('assistant', iterationText);
           }
+          
+          // 检查是否有未完成的 TODO
+          const todos = getTodoItems();
+          const hasPendingTodos = todos.some(t => t.status === 'pending' || t.status === 'in_progress');
+          
+          if (hasPendingTodos) {
+            // 如果还有未完成的 TODO，自动继续执行
+            this.output.onTextDelta('\n\n{#888888-fg}[系统提示] 发现未完成的 TODO 任务，自动继续执行...{/#888888-fg}\n');
+            this.session.add('user', '请继续执行 TODO 列表中的下一个任务。如果所有任务都已完成，请总结最终结果。');
+            messages.push({ role: 'user', content: '请继续执行 TODO 列表中的下一个任务。如果所有任务都已完成，请总结最终结果。' });
+            continue;
+          }
+
           markComplete(isTruncated);
           break;
         }
