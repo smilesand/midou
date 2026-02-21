@@ -7,6 +7,7 @@ import fs from 'fs';
 import { SystemManager } from './system.js';
 import { disconnectAll as disconnectMCP } from './mcp.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
+import { getRecentMemories } from './memory.js';
 
 const app = express();
 app.use(cors());
@@ -81,8 +82,84 @@ app.post('/api/system', async (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/agent/:id/history', async (req, res) => {
+  if (!systemManager) {
+    return res.status(500).json({ error: 'System not initialized' });
+  }
+  
+  const agentId = req.params.id;
+  let agent = null;
+  
+  if (agentId && agentId !== 'null' && agentId !== 'undefined') {
+    agent = systemManager.agents.get(agentId);
+  } else {
+    agent = systemManager.agents.values().next().value;
+  }
+  
+  if (!agent) {
+    return res.status(404).json({ error: 'Agent not found' });
+  }
+  
+  let messages = [];
+  
+  try {
+    // 1. Get recent memories from logs (last 1 day to avoid too much text)
+    let recentLogs = await getRecentMemories(1);
+    
+    // 2. Get current session messages
+    let sessionMessages = [];
+    if (agent.engine && agent.engine.session) {
+      sessionMessages = agent.engine.session.getMessages()
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({
+          role: m.role,
+          agent: m.role === 'assistant' ? agent.name : 'You',
+          content: m.content || ''
+        }))
+        .filter(m => m.content.trim() !== ''); // Don't send empty messages
+    }
+
+    // 3. Deduplicate: remove session messages from recentLogs to avoid showing them twice
+    if (recentLogs && sessionMessages.length > 0) {
+      const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      for (let i = 0; i < sessionMessages.length; i++) {
+        if (sessionMessages[i].role === 'user') {
+          const userMsg = sessionMessages[i].content;
+          let astMsg = '';
+          if (i + 1 < sessionMessages.length && sessionMessages[i+1].role === 'assistant') {
+            astMsg = sessionMessages[i+1].content;
+          }
+          if (userMsg && astMsg) {
+            // Match the exact format written by logConversation in memory.js
+            const pattern = new RegExp(`### \\d{2}:\\d{2}\\n\\n\\*\\*用户\\*\\*: ${escapeRegExp(userMsg)}\\n\\n\\*\\*midou\\*\\*: ${escapeRegExp(astMsg)}\\n*`, 'g');
+            recentLogs = recentLogs.replace(pattern, '');
+          }
+        }
+      }
+      recentLogs = recentLogs.trim();
+    }
+
+    if (recentLogs && recentLogs !== '') {
+      messages.push({
+        role: 'system',
+        agent: 'System',
+        content: `**[历史日志记录]**\n\n${recentLogs}`
+      });
+    }
+    
+    messages = [...messages, ...sessionMessages];
+  } catch (err) {
+    console.error('Failed to load history:', err);
+  }
+    
+  res.json({ messages });
+});
+
 // Catch-all route for Vue Router
-app.use((req, res) => {
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
   res.sendFile(path.join(__dirname, '../web/dist/index.html'));
 });
 

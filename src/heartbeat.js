@@ -55,8 +55,24 @@ ${recentMemories}
 
 请根据策略进行反省。如果没有值得记录的长期记忆，请回复 "NO_REFLECTION_NEEDED"。如果有，请直接输出需要保存的长期记忆内容。`;
 
-    // 使用默认的 LLM 配置
-    const llmClient = new LLMClient();
+    // 确定 LLM 配置：优先使用名为 "system" 的 agent，其次使用第一个 agent，最后使用默认配置
+    let llmConfig = {};
+    if (systemManager && systemManager.agents.size > 0) {
+      let targetAgent = Array.from(systemManager.agents.values()).find(a => a.id === 'system' || a.name.toLowerCase() === 'system');
+      if (!targetAgent) {
+        targetAgent = systemManager.agents.values().next().value;
+      }
+      if (targetAgent && targetAgent.config) {
+        llmConfig = {
+          provider: targetAgent.config.provider || undefined,
+          model: targetAgent.config.model || undefined,
+          apiKey: targetAgent.config.apiKey || undefined,
+          baseURL: targetAgent.config.baseURL || undefined,
+        };
+      }
+    }
+
+    const llmClient = new LLMClient(llmConfig);
     const response = await llmClient.chatSync([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: prompt }

@@ -11,7 +11,7 @@ export class Agent {
     this.name = config.name || 'Agent';
     this.config = config.data || {};
     this.systemManager = systemManager;
-    this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.id);
+    this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.name);
     this.engine = null;
     this.isBusy = false;
   }

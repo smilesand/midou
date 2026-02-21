@@ -28,7 +28,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { marked } from 'marked'
 import { io } from 'socket.io-client'
 
@@ -43,6 +43,7 @@ let currentAssistantMessage = null
 
 onMounted(async () => {
   await loadAgents()
+  await loadHistory()
   
   socket = io('http://localhost:3000')
   
@@ -95,6 +96,29 @@ const loadAgents = async () => {
     console.error('Failed to load agents:', error)
   }
 }
+
+const loadHistory = async () => {
+  try {
+    const agentId = selectedAgentId.value || 'null'
+    const res = await fetch(`http://localhost:3000/api/agent/${agentId}/history`)
+    const data = await res.json()
+    
+    // Reset messages to just the system welcome message
+    messages.value = [
+      { role: 'system', agent: 'System', content: 'Welcome to Midou Multi-Agent Chat!' }
+    ]
+    
+    if (data.messages && data.messages.length > 0) {
+      messages.value.push(...data.messages)
+    }
+  } catch (error) {
+    console.error('Failed to load history:', error)
+  }
+}
+
+watch(selectedAgentId, () => {
+  loadHistory()
+})
 
 const renderMarkdown = (text) => {
   let processedText = text || ''

@@ -9,7 +9,7 @@ import dotenv from 'dotenv';
 const __filename = fileURLToPath(import.meta.url);
 export const MIDOU_PKG = path.dirname(__filename);
 
-// MIDOU_WORKSPACE_DIR — 组织总部（公共资产 / 通信总线 / 全局配置）
+// MIDOU_WORKSPACE_DIR — 组织总部（公共资产 / 全局配置）
 export const MIDOU_WORKSPACE_DIR = process.env.MIDOU_WORKSPACE_DIR || path.join(os.homedir(), '.midou');
 
 // 加载全局 .env
@@ -34,13 +34,12 @@ export default {
     },
   },
 
-  // 组织总部路径（公共资产 / 通信总线）
+  // 组织总部路径（公共资产）
   workspace: {
     root: MIDOU_WORKSPACE_DIR,
     assets: path.join(MIDOU_WORKSPACE_DIR, 'assets'),
-    communication: path.join(MIDOU_WORKSPACE_DIR, 'communication'),
   },
 
-  // midou 包的安装位置（源码位置，用于自我进化）
+  // 包的安装位置（源码位置）
   pkg: MIDOU_PKG,
 };
