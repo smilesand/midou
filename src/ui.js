@@ -251,11 +251,6 @@ export class BlessedOutputHandler {
     this.ui.updateStatus({ status: '就绪' });
   }
 
-  async askSecret(message) {
-    this._stopSpinner();
-    return await this.ui.askSecret(message);
-  }
-
   async confirmCommand(command) {
     this._stopSpinner();
     return await this.ui.confirmCommand(command);
@@ -293,7 +288,6 @@ export class BlessedUI {
 
     // 确认弹窗状态（null = 无弹窗）
     this._confirmState = null;
-    this._secretState = null;
 
     this._statusInfo = {
       mode: '标准',
@@ -439,9 +433,7 @@ export class BlessedUI {
         if (this._onQuit) this._onQuit();
         return;
       }
-      if (this._secretState) {
-        this._handleSecretKey(ch, key);
-      } else if (this._confirmState) {
+      if (this._confirmState) {
         this._handleConfirmKey(ch, key);
       } else {
         this._handleInputKey(ch, key);
@@ -767,69 +759,6 @@ export class BlessedUI {
   }
 
   // ─── 命令确认弹窗 ──────────────────────────────────
-
-  async askSecret(message) {
-    return new Promise((resolve) => {
-      const dialog = blessed.box({
-        parent: this.screen,
-        top: 'center',
-        left: 'center',
-        width: '80%',
-        height: 'shrink',
-        border: { type: 'line' },
-        style: {
-          border: { fg: 'magenta' },
-          bg: '#1a1a1a',
-        },
-        padding: 1,
-        tags: true,
-      });
-
-      this._secretState = { message, buffer: '', dialog, resolve };
-      this._renderSecretDialog();
-    });
-  }
-
-  _handleSecretKey(ch, key) {
-    if (key.name === 'enter' || key.name === 'return') {
-      this._resolveSecret(this._secretState.buffer);
-      return;
-    }
-    if (key.name === 'escape') {
-      this._resolveSecret(null);
-      return;
-    }
-    if (key.name === 'backspace') {
-      this._secretState.buffer = this._secretState.buffer.slice(0, -1);
-      this._renderSecretDialog();
-      return;
-    }
-    if (ch && !key.ctrl && !key.meta) {
-      this._secretState.buffer += ch;
-      this._renderSecretDialog();
-    }
-  }
-
-  _renderSecretDialog() {
-    const s = this._secretState;
-    const masked = '*'.repeat(s.buffer.length) + '█';
-    s.dialog.setContent(
-      '{magenta-fg}{bold}🔐 安全输入{/bold}{/magenta-fg}\n\n' +
-      `{white-fg}${blessed.escape(s.message)}{/white-fg}\n\n` +
-      `{cyan-fg}> ${masked}{/cyan-fg}\n\n` +
-      '{white-fg}Enter 确认  Esc 取消{/white-fg}'
-    );
-    this.screen.render();
-  }
-
-  _resolveSecret(result) {
-    const s = this._secretState;
-    if (!s) return;
-    s.dialog.destroy();
-    this._secretState = null;
-    this.screen.render();
-    s.resolve(result);
-  }
 
   async confirmCommand(command) {
     return new Promise((resolve) => {
