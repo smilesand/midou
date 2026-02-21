@@ -50,6 +50,7 @@ onMounted(async () => {
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '' }
       messages.value.push(currentAssistantMessage)
+      currentAssistantMessage = messages.value[messages.value.length - 1]
     }
     currentAssistantMessage.content += data.text
   })
@@ -64,6 +65,7 @@ onMounted(async () => {
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '<details><summary>💭 Thinking...</summary>\n\n' }
       messages.value.push(currentAssistantMessage)
+      currentAssistantMessage = messages.value[messages.value.length - 1]
     }
   })
 
@@ -95,7 +97,10 @@ const loadAgents = async () => {
 }
 
 const renderMarkdown = (text) => {
-  return marked(text || '')
+  let processedText = text || ''
+  processedText = processedText.replace(/<think>/g, '<details><summary>💭 Thinking...</summary>\n\n')
+  processedText = processedText.replace(/<\/think>/g, '\n\n</details>\n\n')
+  return marked(processedText)
 }
 
 const sendMessage = () => {
