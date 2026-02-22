@@ -1,0 +1,53 @@
+{
+  "agents": [
+    {
+      "id": "agent-1",
+      "name": "manager",
+      "position": {
+        "x": 100,
+        "y": 100
+      },
+      "data": {
+        "isAgentMode": true,
+        "systemPrompt": "Test",
+        "provider": "openai",
+        "model": "gpt-3.5-turbo",
+        "baseURL": "https://api.openai.com/v1",
+        "apiKey": "sk-test",
+        "maxTokens": null,
+        "maxIterations": null,
+        "cronJobs": []
+      }
+    },
+    {
+      "id": "agent-2",
+      "name": "developer",
+      "position": {
+        "x": 332,
+        "y": 390
+      },
+      "data": {
+        "isAgentMode": true,
+        "systemPrompt": "Test",
+        "provider": "openai",
+        "model": "gpt-3.5-turbo",
+        "baseURL": "https://api.openai.com/v1",
+        "apiKey": "sk-test",
+        "maxTokens": null,
+        "maxIterations": null,
+        "cronJobs": []
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "edge-agent-1-agent-2",
+      "source": "agent-1",
+      "target": "agent-2",
+      "data": {
+        "condition": "@developer"
+      }
+    }
+  ],
+  "mcpServers": {}
+}
