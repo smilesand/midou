@@ -69,7 +69,16 @@ export class Agent {
     this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager, isAgentMode, this.id, maxIterations);
     
     // Override output handler to route messages through SystemManager
-    this.engine.setOutputHandler({
+    const baseOutputHandler = this.createBaseOutputHandler();
+    const finalOutputHandler = this.systemManager.buildOutputHandler ? 
+      this.systemManager.buildOutputHandler(this, baseOutputHandler) : 
+      baseOutputHandler;
+
+    this.engine.setOutputHandler(finalOutputHandler);
+  }
+
+  createBaseOutputHandler() {
+    return {
       onThinkingStart: () => this.systemManager.emitEvent('thinking_start', { agentId: this.id }),
       onThinkingDelta: (text) => this.systemManager.emitEvent('thinking_delta', { agentId: this.id, text }),
       onThinkingEnd: (fullText) => this.systemManager.emitEvent('thinking_end', { agentId: this.id, fullText }),
@@ -93,7 +102,7 @@ export class Agent {
       onToolResult: () => this.systemManager.emitEvent('tool_result', { agentId: this.id }),
       onError: (message) => this.systemManager.emitEvent('error', { agentId: this.id, message }),
       confirmCommand: async () => true
-    });
+    };
   }
 
   async talk(message) {

@@ -35,10 +35,11 @@ async function bootstrap() {
   }
 
   systemManager = new SystemManager(io);
-  await systemManager.init();
   
-  // Load plugins after system initialization
+  // Load plugins before system initialization so that middlewares are registered
   await loadPlugins(systemManager, app);
+
+  await systemManager.init();
   
   console.log('Midou backend initialized successfully.');
 }

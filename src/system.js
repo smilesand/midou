@@ -13,6 +13,25 @@ export class SystemManager {
     this.connections = [];
     this.cronJobs = new Map();
     this.systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
+    this.outputHandlerMiddlewares = [];
+  }
+
+  useOutputHandler(middleware) {
+    if (typeof middleware === 'function') {
+      this.outputHandlerMiddlewares.push(middleware);
+    }
+  }
+
+  buildOutputHandler(agent, baseHandler) {
+    let handler = { ...baseHandler };
+    for (const middleware of this.outputHandlerMiddlewares) {
+      try {
+        handler = middleware(agent, handler) || handler;
+      } catch (err) {
+        console.error(`[Plugin] Error in output handler middleware for agent ${agent.id}:`, err);
+      }
+    }
+    return handler;
   }
 
   async init() {
