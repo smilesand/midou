@@ -18,75 +18,151 @@ export class TransformerMemorySystem {
   }
 
   /**
-   * 确保 ChromaDB 服务器正在运行（本地模式）
-   * 如果已在运行则直接复用，否则自动启动
+   * 检查 ChromaDB 心跳是否正常
    */
-  async _ensureChromaServer() {
-    const baseURL = `http://localhost:${this.chromaPort}`;
-
-    // 检查服务器是否已经在运行
+  async _checkHeartbeat() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
     try {
-      const resp = await fetch(`${baseURL}/api/v2/heartbeat`);
-      if (resp.ok) {
-        console.log(`[ChromaDB] Server already running on port ${this.chromaPort}`);
-        this.chromaClient = new ChromaClient({ host: 'localhost', port: this.chromaPort, ssl: false });
-        return;
+      const resp = await fetch(`http://localhost:${this.chromaPort}/api/v2/heartbeat`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      return resp.ok;
+    } catch (e) {
+      clearTimeout(timeout);
+      return false;
+    }
+  }
+
+  /**
+   * 杀死占用指定端口的进程
+   */
+  async _killPortProcess() {
+    const { execSync } = await import('child_process');
+    try {
+      const pids = execSync(`lsof -ti :${this.chromaPort}`, { encoding: 'utf8' }).trim();
+      if (pids) {
+        console.log(`[ChromaDB] Killing orphaned process(es) on port ${this.chromaPort}: ${pids.replace(/\n/g, ', ')}`);
+        execSync(`kill -9 ${pids.replace(/\n/g, ' ')}`);
+        // 等待端口释放
+        await new Promise(r => setTimeout(r, 1000));
       }
     } catch (e) {
-      // Server not running, we'll start it
+      // lsof returns non-zero if no process found — that's fine
+    }
+  }
+
+  /**
+   * 启动一个新的 ChromaDB 进程，返回是否成功
+   */
+  async _spawnChroma() {
+    const chromaBin = path.join(MIDOU_PKG, 'node_modules', '.bin', 'chroma');
+
+    return new Promise((resolve) => {
+      let earlyExit = false;
+
+      this.chromaProcess = spawn(chromaBin, [
+        'run', '--path', this.chromaDataPath, '--port', String(this.chromaPort)
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: MIDOU_PKG,
+      });
+
+      this.chromaProcess.stderr.on('data', (data) => {
+        const msg = data.toString().trim();
+        if (msg && !msg.includes('OpenTelemetry')) {
+          console.error(`[ChromaDB stderr] ${msg}`);
+        }
+      });
+
+      this.chromaProcess.on('error', (err) => {
+        console.error('[ChromaDB] Failed to start server process:', err.message);
+        earlyExit = true;
+        resolve(false);
+      });
+
+      this.chromaProcess.on('exit', (code, signal) => {
+        if (code !== null && code !== 0) {
+          console.error(`[ChromaDB] Server exited with code ${code}`);
+        }
+        earlyExit = true;
+        this.chromaProcess = null;
+        // 只在启动阶段 resolve，运行期间退出不再 resolve
+      });
+
+      // 给进程一点启动时间，如果快速退出说明端口冲突
+      setTimeout(() => {
+        if (earlyExit) {
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      }, 1500);
+    });
+  }
+
+  /**
+   * 确保 ChromaDB 服务器正在运行（本地模式）
+   * 如果已在运行则直接复用，否则自动启动
+   * 港口冲突时自动清理孤儿进程并重试
+   */
+  async _ensureChromaServer() {
+    // 1. 检查服务器是否已经在运行且可用
+    if (await this._checkHeartbeat()) {
+      console.log(`[ChromaDB] Server already running on port ${this.chromaPort}`);
+      this.chromaClient = new ChromaClient({ host: 'localhost', port: this.chromaPort, ssl: false });
+      return;
     }
 
     // 确保数据目录存在
     await fs.mkdir(this.chromaDataPath, { recursive: true });
 
-    // 启动 ChromaDB 服务器
-    console.log(`[ChromaDB] Starting local server on port ${this.chromaPort}, data: ${this.chromaDataPath}`);
-    const chromaBin = path.join(MIDOU_PKG, 'node_modules', '.bin', 'chroma');
+    // 2. 尝试启动（最多重试 2 次，处理端口冲突）
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`[ChromaDB] Starting local server on port ${this.chromaPort} (attempt ${attempt}/${maxAttempts})`);
 
-    this.chromaProcess = spawn(chromaBin, [
-      'run', '--path', this.chromaDataPath, '--port', String(this.chromaPort)
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: MIDOU_PKG,
-    });
+      const spawned = await this._spawnChroma();
 
-    this.chromaProcess.stderr.on('data', (data) => {
-      const msg = data.toString().trim();
-      if (msg) console.error(`[ChromaDB stderr] ${msg}`);
-    });
-
-    this.chromaProcess.on('error', (err) => {
-      console.error('[ChromaDB] Failed to start server process:', err.message);
-    });
-
-    this.chromaProcess.on('exit', (code, signal) => {
-      if (code !== null && code !== 0) {
-        console.error(`[ChromaDB] Server exited with code ${code}`);
+      if (!spawned) {
+        // 进程快速退出 — 通常是端口冲突
+        console.warn(`[ChromaDB] Server failed to start — port ${this.chromaPort} may be occupied`);
+        await this._killPortProcess();
+        continue;
       }
-      this.chromaProcess = null;
-    });
 
-    // 等待服务器就绪（最多 30 秒）
-    const maxWait = 30000;
-    const interval = 500;
-    let waited = 0;
+      // 3. 等待服务器就绪（最多 15 秒）
+      const maxWait = 15000;
+      const interval = 500;
+      let waited = 0;
 
-    while (waited < maxWait) {
-      await new Promise(r => setTimeout(r, interval));
-      waited += interval;
-      try {
-        const resp = await fetch(`${baseURL}/api/v2/heartbeat`);
-        if (resp.ok) {
+      while (waited < maxWait) {
+        await new Promise(r => setTimeout(r, interval));
+        waited += interval;
+
+        // 检查进程是否已退出
+        if (!this.chromaProcess) {
+          console.warn(`[ChromaDB] Server process exited during startup`);
+          break;
+        }
+
+        if (await this._checkHeartbeat()) {
           console.log(`[ChromaDB] Server ready (waited ${waited}ms)`);
           this.chromaClient = new ChromaClient({ host: 'localhost', port: this.chromaPort, ssl: false });
           return;
         }
-      } catch (e) {
-        // Still starting...
       }
+
+      // 这次尝试失败，清理并重试
+      if (this.chromaProcess) {
+        this.chromaProcess.kill('SIGKILL');
+        this.chromaProcess = null;
+      }
+      await this._killPortProcess();
     }
 
-    throw new Error(`ChromaDB server failed to start within ${maxWait / 1000}s`);
+    throw new Error(`ChromaDB server failed to start after ${maxAttempts} attempts on port ${this.chromaPort}`);
   }
 
   async init() {
@@ -101,10 +177,26 @@ export class TransformerMemorySystem {
         await this._ensureChromaServer();
 
         // 获取或创建 collection（不设置 embeddingFunction，我们手动传递 embeddings）
-        this.collection = await this.chromaClient.getOrCreateCollection({
-          name: this.collectionName,
-          metadata: { "hnsw:space": "cosine" }
-        });
+        // ChromaDB v3.x 会因缺少默认 embedding 包而输出警告，但我们手动传递 embeddings，不受影响
+        const origWarn = console.warn;
+        const origErr = console.error;
+        const suppress = (...args) => {
+          const msg = args.join(' ');
+          if (msg.includes('DefaultEmbeddingFunction') || msg.includes('default-embed')) return;
+          origErr.call(console, ...args);
+        };
+        console.warn = suppress;
+        console.error = suppress;
+        try {
+          this.collection = await this.chromaClient.getOrCreateCollection({
+            name: this.collectionName,
+            metadata: { "hnsw:space": "cosine" },
+            embeddingFunction: null
+          });
+        } finally {
+          console.warn = origWarn;
+          console.error = origErr;
+        }
         console.log(`[Transformer Memory] Connected to ChromaDB collection: ${this.collectionName}`);
       } catch (error) {
         console.error('[Transformer Memory] Failed to connect to ChromaDB:', error);
@@ -119,26 +211,21 @@ export class TransformerMemorySystem {
   async shutdown() {
     if (this.chromaProcess) {
       console.log('[ChromaDB] Shutting down server...');
-      this.chromaProcess.kill('SIGTERM');
+      const proc = this.chromaProcess;
+      this.chromaProcess = null;
+
+      proc.kill('SIGTERM');
       // 等待最多 5 秒让进程退出
       await new Promise(resolve => {
         const timeout = setTimeout(() => {
-          if (this.chromaProcess) {
-            this.chromaProcess.kill('SIGKILL');
-          }
+          try { proc.kill('SIGKILL'); } catch (e) {}
           resolve();
         }, 5000);
-        if (this.chromaProcess) {
-          this.chromaProcess.on('exit', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-        } else {
+        proc.on('exit', () => {
           clearTimeout(timeout);
           resolve();
-        }
+        });
       });
-      this.chromaProcess = null;
       console.log('[ChromaDB] Server stopped.');
     }
     this.collection = null;

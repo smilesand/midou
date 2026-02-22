@@ -71,14 +71,15 @@ export class SystemManager {
         this.agents.set(agent.id, agent);
 
         // Setup cron if configured
-        if (agentConfig.data?.cronJobs && Array.isArray(agentConfig.data.cronJobs)) {
-          for (const job of agentConfig.data.cronJobs) {
+        const agentData = agentConfig.data || agentConfig.config || {};
+        if (agentData.cronJobs && Array.isArray(agentData.cronJobs)) {
+          for (const job of agentData.cronJobs) {
             if (job.expression) {
               this.setupCronJob(agent.id, job.expression, job.prompt);
             }
           }
-        } else if (agentConfig.data?.cron) {
-          this.setupCronJob(agent.id, agentConfig.data.cron, 'System: Scheduled activation triggered.');
+        } else if (agentData.cron) {
+          this.setupCronJob(agent.id, agentData.cron, 'System: Scheduled activation triggered.');
         }
       }
       

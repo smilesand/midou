@@ -18,7 +18,11 @@
     "dev:backend": "node src/index.js",
     "dev:frontend": "cd web && npm run dev",
     "dev": "npm run dev:backend & npm run dev:frontend",
-    "build": "cd web && npm run build"
+    "build": "cd web && npm run build",
+    "test": "node --test test/test-unit.js",
+    "test:rag": "node --test test/test-rag.js",
+    "test:api": "node --test test/test-api.js",
+    "test:all": "node --test test/"
   },
   "keywords": [
     "ai",

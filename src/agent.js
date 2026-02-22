@@ -10,7 +10,7 @@ export class Agent {
   constructor(config, systemManager) {
     this.id = config.id;
     this.name = config.name || 'Agent';
-    this.config = config.data || {};
+    this.config = config.data || config.config || {};
     this.systemManager = systemManager;
     this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.name);
     this.engine = null;
