@@ -42,8 +42,9 @@ export class ChatEngine {
    * @param {object} llmConfig - LLM 配置
    * @param {object} systemManager - 系统管理器
    * @param {boolean} isAgentMode - 是否为 Agent 模式（支持自动循环）
+   * @param {string} agentId - Agent ID
    */
-  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null, isAgentMode = true) {
+  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null, isAgentMode = true, agentId = 'default') {
     this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
@@ -55,6 +56,7 @@ export class ChatEngine {
     this.isAgentMode = isAgentMode;
     this.llmClient = new LLMClient(llmConfig);
     this.systemManager = systemManager;
+    this.agentId = agentId;
   }
 
   setOutputHandler(handler) {
@@ -244,7 +246,7 @@ export class ChatEngine {
 
           let result;
           try {
-            result = await executeTool(tc.function.name, args, this.systemManager);
+            result = await executeTool(tc.function.name, args, this.systemManager, this.agentId);
             this.output.onToolResult();
           } catch (e) {
             result = `工具执行出错: ${e.message}`;

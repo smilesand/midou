@@ -10,16 +10,25 @@ import { listSkillNames, loadSkillContent } from './skills.js';
 import { getLongTermMemory, getRecentMemories } from './memory.js';
 import dayjs from 'dayjs';
 
-let todoItems = [];
+const todoItemsMap = new Map();
 
-export function addTodoItem(title, description) {
-  const id = todoItems.length + 1;
-  todoItems.push({ id, title, description, status: 'pending' });
+function getAgentTodos(agentId) {
+  if (!todoItemsMap.has(agentId)) {
+    todoItemsMap.set(agentId, []);
+  }
+  return todoItemsMap.get(agentId);
+}
+
+export function addTodoItem(agentId, title, description) {
+  const todos = getAgentTodos(agentId);
+  const id = todos.length + 1;
+  todos.push({ id, title, description, status: 'pending' });
   return { id, title, description };
 }
 
-export function updateTodoStatus(id, status) {
-  const item = todoItems.find(t => t.id === id);
+export function updateTodoStatus(agentId, id, status) {
+  const todos = getAgentTodos(agentId);
+  const item = todos.find(t => t.id === id);
   if (item) {
     item.status = status;
     return true;
@@ -27,12 +36,12 @@ export function updateTodoStatus(id, status) {
   return false;
 }
 
-export function getTodoItems() {
-  return todoItems;
+export function getTodoItems(agentId) {
+  return getAgentTodos(agentId);
 }
 
-export function clearTodoItems() {
-  todoItems = [];
+export function clearTodoItems(agentId) {
+  todoItemsMap.set(agentId, []);
 }
 
 /**
@@ -318,7 +327,7 @@ export const toolDefinitions = [
 /**
  * 执行工具调用
  */
-export async function executeTool(name, args, systemManager) {
+export async function executeTool(name, args, systemManager, agentId) {
   if (isMCPTool(name)) {
     return await executeMCPTool(name, args);
   }
@@ -378,8 +387,16 @@ export async function executeTool(name, args, systemManager) {
         return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知用户手动操作。';
       }
 
+      let cwd = args.cwd;
+      if (!cwd && systemManager && agentId) {
+        const agent = systemManager.agents.get(agentId);
+        if (agent) {
+          cwd = agent.workspaceDir;
+        }
+      }
+
       const result = await runShellCommand(args.command, {
-        cwd: args.cwd,
+        cwd: cwd,
         timeout: args.timeout,
       });
       let output = '';
@@ -449,26 +466,26 @@ export async function executeTool(name, args, systemManager) {
 
     // ── TODO 工作流 ──
     case 'create_todo': {
-      const item = addTodoItem(args.title, args.description || '');
+      const item = addTodoItem(agentId, args.title, args.description || '');
       return `已创建任务 [${item.id}]: ${item.title}`;
     }
 
     case 'update_todo': {
-      const item = updateTodoStatus(args.id, args.status);
+      const item = updateTodoStatus(agentId, args.id, args.status);
       if (!item) return `未找到任务 [${args.id}]`;
       const statusMap = { pending: '待办', in_progress: '进行中', done: '✓ 完成', blocked: '阻塞' };
       return `任务 [${item.id}] "${item.title}" → ${statusMap[item.status] || item.status}`;
     }
 
     case 'list_todos': {
-      const items = getTodoItems();
+      const items = getTodoItems(agentId);
       if (items.length === 0) return '当前没有工作任务';
       const statusIcon = { pending: '□', in_progress: '►', done: '✓', blocked: '✗' };
       return items.map(i => `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}`).join('\n');
     }
 
     case 'clear_todos': {
-      clearTodoItems();
+      clearTodoItems(agentId);
       return '已清空所有工作任务';
     }
 

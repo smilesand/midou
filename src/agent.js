@@ -14,6 +14,7 @@ export class Agent {
     this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.name);
     this.engine = null;
     this.isBusy = false;
+    this.messageQueue = [];
   }
 
   async init() {
@@ -63,7 +64,7 @@ export class Agent {
     const isAgentMode = this.config.isAgentMode !== false;
 
     // Initialize ChatEngine
-    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager, isAgentMode);
+    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager, isAgentMode, this.id);
     
     // Override output handler to route messages through SystemManager
     this.engine.setOutputHandler({
@@ -94,14 +95,26 @@ export class Agent {
   }
 
   async talk(message) {
-    if (this.isBusy) return;
+    this.messageQueue.push(message);
+    this._processQueue();
+  }
+
+  async _processQueue() {
+    if (this.isBusy || this.messageQueue.length === 0) return;
+    
     this.isBusy = true;
     this.systemManager.emitEvent('agent_busy', { agentId: this.id });
+    
     try {
-      const response = await this.engine.talk(message);
-      await logConversation(this.id, this.name, message, response);
-    } catch (error) {
-      this.systemManager.emitEvent('error', { agentId: this.id, message: error.message });
+      while (this.messageQueue.length > 0) {
+        const message = this.messageQueue.shift();
+        try {
+          const response = await this.engine.talk(message);
+          await logConversation(this.id, this.name, message, response);
+        } catch (error) {
+          this.systemManager.emitEvent('error', { agentId: this.id, message: error.message });
+        }
+      }
     } finally {
       this.isBusy = false;
       this.systemManager.emitEvent('agent_idle', { agentId: this.id });
