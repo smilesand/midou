@@ -47,24 +47,6 @@ export let toolDefinitions = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'ask_user',
-      description: '当尝试了所有方法仍然失败，或者需要用户提供无法通过代码获取的信息（如密码、确认等）时调用此工具，暂停任务并向用户提问。',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: {
-            type: 'string',
-            description: '向用户提出的问题',
-          },
-        },
-        required: ['question'],
-      },
-    },
-  },
-
   // ── 记忆与日志 ──────────────────────────────────
   {
     type: 'function',
@@ -350,9 +332,6 @@ export async function executeTool(name, args, systemManager, agentId) {
     // ── 任务控制 ──
     case 'finish_task':
       return `任务已完成: ${args.summary}`;
-    case 'ask_user':
-      return `等待用户回复: ${args.question}`;
-
     // ── 记忆与日志 ──
     case 'search_memory': {
       try {
