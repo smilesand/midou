@@ -156,7 +156,7 @@ const getAgentName = (id) => {
 
 const loadTodos = async () => {
   try {
-    const res = await fetch('http://localhost:3000/api/todos')
+    const res = await fetch('/api/todos')
     todos.value = await res.json()
   } catch (error) {
     console.error('Failed to load todos:', error)
@@ -166,7 +166,7 @@ const loadTodos = async () => {
 const createTodo = async () => {
   if (!newTodo.value.title || !newTodo.value.agentId) return
   try {
-    const res = await fetch('http://localhost:3000/api/todos', {
+    const res = await fetch('/api/todos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newTodo.value)
@@ -182,7 +182,7 @@ const createTodo = async () => {
 
 const updateTodo = async (todo) => {
   try {
-    await fetch(`http://localhost:3000/api/todos/${todo.id}`, {
+    await fetch(`/api/todos/${todo.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: todo.status, notes: todo.notes })
@@ -194,7 +194,7 @@ const updateTodo = async (todo) => {
 
 const deleteTodo = async (id) => {
   try {
-    const res = await fetch(`http://localhost:3000/api/todos/${id}`, {
+    const res = await fetch(`/api/todos/${id}`, {
       method: 'DELETE'
     })
     if (res.ok) {
@@ -205,17 +205,24 @@ const deleteTodo = async (id) => {
   }
 }
 
+/** Resolve agentId (e.g. 'agent-1') to human-readable name */
+const resolveAgentName = (agentId) => {
+  if (!agentId) return 'Agent'
+  const agent = agents.value.find(a => a.id === agentId)
+  return agent ? agent.name : agentId
+}
+
 onMounted(async () => {
   await loadAgents()
   await loadHistory()
   
-  socket = io('http://localhost:3000')
+  socket = io()
   
-  socket.on('agent_busy', () => {
+  socket.on('agent_busy', (data) => {
     isBusy.value = true
   })
 
-  socket.on('agent_idle', () => {
+  socket.on('agent_idle', (data) => {
     isBusy.value = false
   })
 
@@ -225,7 +232,7 @@ onMounted(async () => {
 
   socket.on('message_delta', (data) => {
     if (!currentAssistantMessage) {
-      currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '' }
+      currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
       messages.value.push(currentAssistantMessage)
       currentAssistantMessage = messages.value[messages.value.length - 1]
     }
@@ -242,10 +249,11 @@ onMounted(async () => {
 
   socket.on('thinking_start', (data) => {
     if (!currentAssistantMessage) {
-      currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '<details><summary>💭 Thinking...</summary>\n\n' }
+      currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
       messages.value.push(currentAssistantMessage)
       currentAssistantMessage = messages.value[messages.value.length - 1]
     }
+    currentAssistantMessage.content += '<details><summary>💭 Thinking...</summary>\n\n'
     scrollToBottom()
   })
 
@@ -263,6 +271,16 @@ onMounted(async () => {
     scrollToBottom()
   })
 
+  socket.on('tool_exec', (data) => {
+    if (!currentAssistantMessage) {
+      currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
+      messages.value.push(currentAssistantMessage)
+      currentAssistantMessage = messages.value[messages.value.length - 1]
+    }
+    currentAssistantMessage.content += `\n\n> 🔧 *${data.name}*\n\n`
+    scrollToBottom()
+  })
+
   socket.on('error', (data) => {
     messages.value.push({ role: 'system', agent: 'System', content: `Error: ${data.message}` })
   })
@@ -270,7 +288,7 @@ onMounted(async () => {
 
 const loadAgents = async () => {
   try {
-    const res = await fetch('http://localhost:3000/api/system')
+    const res = await fetch('/api/system')
     const data = await res.json()
     agents.value = data.agents || []
   } catch (error) {
@@ -281,7 +299,7 @@ const loadAgents = async () => {
 const loadHistory = async () => {
   try {
     const agentId = selectedAgentId.value || 'null'
-    const res = await fetch(`http://localhost:3000/api/agent/${agentId}/history`)
+    const res = await fetch(`/api/agent/${agentId}/history`)
     const data = await res.json()
     
     // Reset messages to just the system welcome message

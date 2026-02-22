@@ -357,17 +357,6 @@ const removeCronJob = (index) => {
   selectedNode.value.data.cronJobs.splice(index, 1)
 }
 
-const addCondition = () => {
-  if (!selectedEdge.value.data.conditions) {
-    selectedEdge.value.data.conditions = []
-  }
-  selectedEdge.value.data.conditions.push({ type: 'contains', value: '' })
-}
-
-const removeCondition = (index) => {
-  selectedEdge.value.data.conditions.splice(index, 1)
-}
-
 const removeNode = () => {
   if (selectedNode.value) {
     // Remove the node and any connected edges
