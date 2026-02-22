@@ -2,7 +2,8 @@ import dayjs from 'dayjs';
 import fs from 'fs/promises';
 import path from 'path';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
-import { getRecentMemories, addLongTermMemory, writeJournal } from './memory.js';
+import { getRecentMemories, writeJournal } from './memory.js';
+import { addMemory } from './rag/index.js';
 import { getTodoItems } from './todo.js';
 import { LLMClient } from './llm.js';
 
@@ -51,8 +52,8 @@ export async function beat(systemManager) {
         console.error(`[Heartbeat] 检查 Agent ${agent.name} 的 TODO 失败:`, err.message);
       }
 
-      // 2. 读取该 Agent 最近的记忆
-      const recentMemories = await getRecentMemories(1, agentId); // 读取今天的日记
+      // 2. 读取该 Agent 最近的记忆（注意：用 agent.name 而非 agentId，因为日记文件路径基于名称）
+      const recentMemories = await getRecentMemories(1, agent.name); // 读取今天的日记
       if (!recentMemories || recentMemories.trim() === '') {
         console.log(`[Heartbeat] Agent ${agent.name} 今日无新记忆，跳过反省。`);
         continue;
@@ -94,16 +95,18 @@ ${recentMemories}
         { role: 'user', content: prompt }
       ]);
 
-      if (response && !response.includes('NO_REFLECTION_NEEDED')) {
+      const responseContent = response?.content || '';
+
+      if (responseContent && !responseContent.includes('NO_REFLECTION_NEEDED')) {
         console.log(`[Heartbeat] Agent ${agent.name} 生成了新的长期记忆。`);
-        await addLongTermMemory(`[Agent: ${agent.name}]\n${response}`);
+        await addMemory(agentId, `[Agent: ${agent.name}]\n${responseContent}`, 4, 'semantic');
         
         // 记录到该 Agent 今天的日记中
         const time = dayjs().format('HH:mm');
-        await writeJournal(`### ${time} [系统反省]\n\n${response}\n`, agentId);
+        await writeJournal(`### ${time} [系统反省]\n\n${responseContent}\n`, agent.name);
         
         // 广播给所有 Agent
-        systemManager.emitEvent('system_message', { message: `[系统反省 - ${agent.name}] ${response}` });
+        systemManager.emitEvent('system_message', { message: `[系统反省 - ${agent.name}] ${responseContent}` });
       } else {
         console.log(`[Heartbeat] Agent ${agent.name} 无需生成新记忆。`);
       }

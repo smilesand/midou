@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -10,6 +11,7 @@ import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 import { getRecentMemories } from './memory.js';
 import { getTodoItems, addTodoItem, updateTodoStatus, deleteTodoItem } from './todo.js';
 import { loadPlugins } from './plugin.js';
+import { shutdownRAG } from './rag/index.js';
 
 const app = express();
 app.use(cors());
@@ -244,5 +246,6 @@ process.on('SIGINT', async () => {
     systemManager.stopAllCronJobs();
   }
   await disconnectMCP();
+  await shutdownRAG();
   process.exit(0);
 });

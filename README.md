@@ -55,7 +55,7 @@ midou
 ```
 
 > **需要同步的核心文件**（`~/.midou/` 目录）：
-> `.env`、`SOUL.md`、`IDENTITY.md`、`USER.md`、`MEMORY.md`、`HEARTBEAT.md`、`memory/*.md`
+> `.env`、`SOUL.md`、`IDENTITY.md`、`USER.md`、`HEARTBEAT.md`、`memory/*.md`
 
 ## 环境变量
 
@@ -182,7 +182,7 @@ npm 包（身体）                  ~/.midou/（灵魂之家）
 │ src/llm.js        │  读写 →  │ SOUL.md       ← 灵魂  │
 │ src/soul.js       │          │ IDENTITY.md   ← 身份  │
 │ src/chat.js       │          │ USER.md       ← 主人  │
-│ src/memory.js     │          │ MEMORY.md     ← 记忆  │
+│ src/memory.js     │          │               ← 记忆  │
 │ src/heartbeat.js  │          │ HEARTBEAT.md  ← 心跳  │
 │ src/tools.js      │          │ memory/       ← 日记  │
 │ src/scheduler.js  │          │ reminders.json← 提醒  │

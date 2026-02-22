@@ -7,7 +7,6 @@ import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { listSkillNames, loadSkillContent } from './skills.js';
-import { getLongTermMemory, getRecentMemories } from './memory.js';
 import { addMemory, searchMemory } from './rag/index.js';
 import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './todo.js';
 import dayjs from 'dayjs';

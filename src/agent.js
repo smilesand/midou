@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import { ChatEngine } from './chat.js';
 import { buildSkillsPrompt } from './skills.js';
 import { logConversation } from './memory.js';
+import { addEpisodicMemory } from './rag/index.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 
 export class Agent {
@@ -122,7 +123,14 @@ export class Agent {
         const message = this.messageQueue.shift();
         try {
           const response = await this.engine.talk(message);
+          // 同时存储到 MD 日志和 ChromaDB
           await logConversation(this.name, message, response);
+          // 将对话作为情景记忆存入 ChromaDB
+          try {
+            await addEpisodicMemory(this.id, message, response);
+          } catch (memErr) {
+            console.error(`[Agent ${this.name}] Failed to store episodic memory:`, memErr.message);
+          }
         } catch (error) {
           this.systemManager.emitEvent('error', { agentId: this.id, message: error.message });
         }

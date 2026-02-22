@@ -1,6 +1,6 @@
 node_modules/
 .env
-
+chroma_data/
 # 旧的 workspace 目录（灵魂已迁移到 ~/.midou/）
 workspace/memory/
 !workspace/memory/.gitkeep

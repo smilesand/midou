@@ -116,22 +116,6 @@ export async function getRecentMemories(days = 2, agentName = null) {
 }
 
 /**
- * 读取长期记忆
- */
-export async function getLongTermMemory() {
-  return await readFile('MEMORY.md') || '';
-}
-
-/**
- * 写入长期记忆（追加一条新记忆）
- */
-export async function addLongTermMemory(content) {
-  const timestamp = dayjs().format('YYYY-MM-DD HH:mm');
-  const entry = `\n### ${timestamp}\n\n${content}\n`;
-  await appendFile('MEMORY.md', entry);
-}
-
-/**
  * 获取所有日记文件列表
  */
 export async function listJournals() {
