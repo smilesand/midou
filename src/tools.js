@@ -10,6 +10,7 @@ import { listSkillNames, loadSkillContent } from './skills.js';
 import { getLongTermMemory, getRecentMemories } from './memory.js';
 import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './todo.js';
 import dayjs from 'dayjs';
+import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 
 export const dynamicToolHandlers = new Map();
 
@@ -89,16 +90,16 @@ export let toolDefinitions = [
       parameters: {
         type: 'object',
         properties: {
-          agent_id: {
+          agent_name: {
             type: 'string',
-            description: 'Agent 的 ID',
+            description: 'Agent 的名称',
           },
           days_ago: {
             type: 'number',
             description: '读取几天前的日志（0 表示今天，1 表示昨天，以此类推）',
           },
         },
-        required: ['agent_id', 'days_ago'],
+        required: ['agent_name', 'days_ago'],
       },
     },
   },
@@ -344,19 +345,19 @@ export async function executeTool(name, args, systemManager, agentId) {
     }
     case 'read_agent_log': {
       const date = dayjs().subtract(args.days_ago, 'day').format('YYYY-MM-DD');
-      const logPath = `agents/${args.agent_id}/memory/${date}.md`;
+      const logPath = `agents/${args.agent_name}/memory/${date}.md`;
       try {
-        const content = await fs.readFile(path.join(process.cwd(), 'workspace', logPath), 'utf-8');
-        return content || `Agent ${args.agent_id} 在 ${date} 没有日志记录。`;
+        const content = await fs.readFile(path.join(MIDOU_WORKSPACE_DIR, logPath), 'utf-8');
+        return content || `Agent ${args.agent_name} 在 ${date} 没有日志记录。`;
       } catch (e) {
-        return `无法读取 Agent ${args.agent_id} 在 ${date} 的日志。`;
+        return `无法读取 Agent ${args.agent_name} 在 ${date} 的日志。`;
       }
     }
 
     // ── 组织协作与通信 ──
     case 'read_organization_roster':
       if (systemManager) {
-        return systemManager.getOrganizationRoster();
+        return systemManager.getOrganizationRoster(agentId);
       }
       return '组织花名册功能尚未完全实现。';
 

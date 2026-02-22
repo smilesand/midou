@@ -114,13 +114,42 @@ export class SystemManager {
     this.cronJobs.clear();
   }
 
-  getOrganizationRoster() {
+  getOrganizationRoster(requestingAgentId = null) {
     if (this.agents.size === 0) return '目前组织里没有其他 Agent。';
     
     let roster = '组织花名册：\n';
     for (const [id, agent] of this.agents.entries()) {
       roster += `- [${id}] ${agent.name}: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
     }
+
+    if (requestingAgentId) {
+      const outgoing = this.connections.filter(c => c.source === requestingAgentId);
+      if (outgoing.length > 0) {
+        roster += '\n你可以通过在回复中包含特定的关键词，将消息路由给以下 Agent：\n';
+        for (const conn of outgoing) {
+          const targetAgent = this.agents.get(conn.target);
+          if (!targetAgent) continue;
+          
+          let conditionsDesc = [];
+          if (conn.data?.conditions && Array.isArray(conn.data.conditions)) {
+            for (const cond of conn.data.conditions) {
+              if (cond.type === 'contains' && cond.value) {
+                conditionsDesc.push(`包含文本 "${cond.value}"`);
+              } else if (cond.type === 'regex' && cond.value) {
+                conditionsDesc.push(`匹配正则 "${cond.value}"`);
+              }
+            }
+          } else if (conn.data?.condition) {
+            conditionsDesc.push(`包含文本 "${conn.data.condition}"`);
+          }
+
+          if (conditionsDesc.length > 0) {
+            roster += `- 发送给 [${targetAgent.name}] (${conn.target})，触发条件：${conditionsDesc.join(' 或 ')}\n`;
+          }
+        }
+      }
+    }
+
     return roster;
   }
 
@@ -171,9 +200,11 @@ export class SystemManager {
 
       if (shouldRoute) {
         console.log(`Routing message from ${sourceAgentId} to ${conn.target}`);
+        const sourceAgent = this.agents.get(sourceAgentId);
+        const sourceName = sourceAgent ? sourceAgent.name : sourceAgentId;
         // Delay slightly to avoid immediate recursion issues
         setTimeout(() => {
-          targetAgent.talk(`Message from ${sourceAgentId}:\n${message}`);
+          targetAgent.talk(`[来自 ${sourceName} 的消息]:\n${message}`);
         }, 100);
       }
     }

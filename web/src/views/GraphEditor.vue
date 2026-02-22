@@ -5,6 +5,9 @@
       <button @click="saveSystem" :disabled="isSaving">
         {{ isSaving ? 'Saving...' : 'Save System' }}
       </button>
+      <button @click="exportSystem">Export System</button>
+      <button @click="triggerImport">Import System</button>
+      <input type="file" ref="fileInput" @change="importSystem" accept=".json" style="display: none" />
       <button @click="openMcpConfig">Configure MCP</button>
     </div>
     
@@ -136,6 +139,7 @@ const showMcpConfig = ref(false)
 const mcpServers = ref({})
 const mcpServersJson = ref('{}')
 const mcpJsonError = ref('')
+const fileInput = ref(null)
 
 let nodeId = 1
 
@@ -160,6 +164,8 @@ onMounted(async () => {
         model: agent.data?.model || '',
         baseURL: agent.data?.baseURL || '',
         apiKey: agent.data?.apiKey || '',
+        maxTokens: agent.data?.maxTokens || null,
+        maxIterations: agent.data?.maxIterations || null,
         cronJobs: agent.data?.cronJobs || []
       }
     }))
@@ -199,6 +205,8 @@ const addAgent = () => {
       model: '',
       baseURL: '',
       apiKey: '',
+      maxTokens: null,
+      maxIterations: null,
       cronJobs: []
     }
   })
@@ -261,35 +269,93 @@ const saveMcpConfig = () => {
   }
 }
 
+const getSystemData = () => {
+  const nodes = elements.value.filter(e => !e.source)
+  const edges = elements.value.filter(e => e.source)
+  
+  return {
+    agents: nodes.map(n => ({
+      id: n.id,
+      name: n.data.name,
+      position: n.position,
+      data: {
+        isAgentMode: n.data.isAgentMode,
+        systemPrompt: n.data.systemPrompt,
+        provider: n.data.provider,
+        model: n.data.model,
+        baseURL: n.data.baseURL,
+        apiKey: n.data.apiKey,
+        maxTokens: n.data.maxTokens,
+        maxIterations: n.data.maxIterations,
+        cronJobs: n.data.cronJobs
+      }
+    })),
+    connections: edges.map(e => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      data: e.data
+    })),
+    mcpServers: mcpServers.value
+  }
+}
+
+const exportSystem = () => {
+  const systemData = getSystemData()
+  const blob = new Blob([JSON.stringify(systemData, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'system.json'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+const triggerImport = () => {
+  if (fileInput.value) {
+    fileInput.value.click()
+  }
+}
+
+const importSystem = async (event) => {
+  const file = event.target.files[0]
+  if (!file) return
+  
+  const reader = new FileReader()
+  reader.onload = async (e) => {
+    try {
+      const systemData = JSON.parse(e.target.result)
+      
+      // Send to backend to save and reload
+      const response = await fetch('/api/system', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(systemData)
+      })
+      
+      if (response.ok) {
+        alert('System imported successfully!')
+        window.location.reload()
+      } else {
+        alert('Failed to import system.')
+      }
+    } catch (err) {
+      alert('Invalid JSON file.')
+      console.error(err)
+    }
+  }
+  reader.readAsText(file)
+  
+  // Reset input
+  event.target.value = ''
+}
+
 const saveSystem = async () => {
   isSaving.value = true
   try {
-    const nodes = elements.value.filter(e => !e.source)
-    const edges = elements.value.filter(e => e.source)
-    
-    const system = {
-      agents: nodes.map(n => ({
-        id: n.id,
-        name: n.data.name,
-        position: n.position,
-        data: {
-          isAgentMode: n.data.isAgentMode,
-          systemPrompt: n.data.systemPrompt,
-          provider: n.data.provider,
-          model: n.data.model,
-          baseURL: n.data.baseURL,
-          apiKey: n.data.apiKey,
-          cronJobs: n.data.cronJobs
-        }
-      })),
-      connections: edges.map(e => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        data: e.data
-      })),
-      mcpServers: mcpServers.value
-    }
+    const system = getSystemData()
     
     const response = await fetch('/api/system', {
       method: 'POST',

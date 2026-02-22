@@ -119,7 +119,7 @@ app.get('/api/agent/:id/history', async (req, res) => {
   
   try {
     // 1. Get recent memories from logs (last 1 day to avoid too much text)
-    let recentLogs = await getRecentMemories(1, agent.id);
+    let recentLogs = await getRecentMemories(1, agent.name);
     
     // 2. Get current session messages
     let sessionMessages = [];

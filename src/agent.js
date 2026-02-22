@@ -30,9 +30,9 @@ export class Agent {
     }
     
     // Append organization roster
-    const roster = this.systemManager.getOrganizationRoster();
+    const roster = this.systemManager.getOrganizationRoster(this.id);
     if (roster) {
-      systemPrompt += `\n\n=== 组织花名册 ===\n${roster}`;
+      systemPrompt += `\n\n=== 组织花名册与消息路由 ===\n${roster}`;
     }
     
     // Append SOUL.md if it exists
@@ -121,7 +121,7 @@ export class Agent {
         const message = this.messageQueue.shift();
         try {
           const response = await this.engine.talk(message);
-          await logConversation(this.id, this.name, message, response);
+          await logConversation(this.name, message, response);
         } catch (error) {
           this.systemManager.emitEvent('error', { agentId: this.id, message: error.message });
         }
