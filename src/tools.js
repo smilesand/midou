@@ -92,7 +92,7 @@ export let toolDefinitions = [
     type: 'function',
     function: {
       name: 'add_memory',
-      description: '将重要信息、事实或总结存入 RAG 长期记忆库中。',
+      description: '将重要信息、事实或总结存入 Transformer 长期记忆库中。',
       parameters: {
         type: 'object',
         properties: {
@@ -104,6 +104,11 @@ export let toolDefinitions = [
             type: 'number',
             description: '重要性评分 (1-5，5最重要，默认 3)',
           },
+          type: {
+            type: 'string',
+            enum: ['semantic', 'episodic'],
+            description: '记忆类型：semantic(语义/事实/规则) 或 episodic(情景/事件/日志)，默认 semantic'
+          }
         },
         required: ['content'],
       },
@@ -355,15 +360,19 @@ export async function executeTool(name, args, systemManager, agentId) {
         const results = await searchMemory(agentId, args.query, args.limit || 5);
         if (!results || results.length === 0) return `未找到与 "${args.query}" 相关的记忆。`;
         
-        return results.map((r, i) => `[记忆 ${i+1}] (相关度: ${(1 - r.distance).toFixed(2)}): ${r.content}`).join('\n\n');
+        return results.map((r, i) => {
+          const weight = (r.attentionWeight * 100).toFixed(1) + '%';
+          const rel = r.metrics.isRelational ? ' [关联推理]' : '';
+          return `[记忆 ${i+1}] (注意力权重: ${weight}${rel} | 类型: ${r.type}):\n${r.content}`;
+        }).join('\n\n');
       } catch (e) {
         return `搜索记忆失败: ${e.message}`;
       }
     }
     case 'add_memory': {
       try {
-        const id = await addMemory(agentId, args.content, args.importance || 3);
-        return `已成功将内容存入长期记忆库 (ID: ${id})。`;
+        const id = await addMemory(agentId, args.content, args.importance || 3, args.type || 'semantic');
+        return `已成功将内容存入 Transformer 记忆库 (ID: ${id}, 类型: ${args.type || 'semantic'})。`;
       } catch (e) {
         return `添加记忆失败: ${e.message}`;
       }
