@@ -59,12 +59,14 @@ export class Agent {
       model: this.config.model || undefined,
       apiKey: this.config.apiKey || undefined,
       baseURL: this.config.baseURL || undefined,
+      maxTokens: this.config.maxTokens ? parseInt(this.config.maxTokens, 10) : undefined,
     };
 
     const isAgentMode = this.config.isAgentMode !== false;
+    const maxIterations = this.config.maxIterations ? parseInt(this.config.maxIterations, 10) : undefined;
 
     // Initialize ChatEngine
-    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager, isAgentMode, this.id);
+    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager, isAgentMode, this.id, maxIterations);
     
     // Override output handler to route messages through SystemManager
     this.engine.setOutputHandler({

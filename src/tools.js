@@ -11,10 +11,23 @@ import { getLongTermMemory, getRecentMemories } from './memory.js';
 import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './todo.js';
 import dayjs from 'dayjs';
 
+export const dynamicToolHandlers = new Map();
+
+export function registerTool(definition, handler) {
+  // Check if tool already exists to prevent duplicates on reload
+  const existingIndex = toolDefinitions.findIndex(t => t.function.name === definition.function.name);
+  if (existingIndex >= 0) {
+    toolDefinitions[existingIndex] = definition;
+  } else {
+    toolDefinitions.push(definition);
+  }
+  dynamicToolHandlers.set(definition.function.name, handler);
+}
+
 /**
  * 工具定义（OpenAI Function Calling 格式）
  */
-export const toolDefinitions = [
+export let toolDefinitions = [
   // ── 任务控制 ──────────────────────────────────
   {
     type: 'function',
@@ -303,6 +316,11 @@ export const toolDefinitions = [
  * 执行工具调用
  */
 export async function executeTool(name, args, systemManager, agentId) {
+  if (dynamicToolHandlers.has(name)) {
+    const handler = dynamicToolHandlers.get(name);
+    return await handler(args, { systemManager, agentId });
+  }
+
   if (isMCPTool(name)) {
     return await executeMCPTool(name, args);
   }

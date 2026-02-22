@@ -9,6 +9,7 @@ import { disconnectAll as disconnectMCP } from './mcp.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 import { getRecentMemories } from './memory.js';
 import { getTodoItems, addTodoItem, updateTodoStatus, deleteTodoItem } from './todo.js';
+import { loadPlugins } from './plugin.js';
 
 const app = express();
 app.use(cors());
@@ -35,6 +36,9 @@ async function bootstrap() {
 
   systemManager = new SystemManager(io);
   await systemManager.init();
+  
+  // Load plugins after system initialization
+  await loadPlugins(systemManager, app);
   
   console.log('Midou backend initialized successfully.');
 }
@@ -214,14 +218,6 @@ app.delete('/api/todos/:id', async (req, res) => {
   }
 });
 
-// Catch-all route for Vue Router
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/')) {
-    return next();
-  }
-  res.sendFile(path.join(__dirname, '../web/dist/index.html'));
-});
-
 const PORT = process.env.PORT || 3000;
 
 bootstrap().then(() => {
@@ -231,6 +227,14 @@ bootstrap().then(() => {
 }).catch(err => {
   console.error('Failed to start backend:', err);
   process.exit(1);
+});
+
+// Catch-all route for Vue Router
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+  res.sendFile(path.join(__dirname, '../web/dist/index.html'));
 });
 
 process.on('SIGINT', async () => {

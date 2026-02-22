@@ -62,6 +62,14 @@
           <label>API Key:</label>
           <input type="password" v-model="selectedNode.data.apiKey" />
         </div>
+        <div class="form-group">
+          <label>Max Tokens:</label>
+          <input type="number" v-model.number="selectedNode.data.maxTokens" placeholder="e.g. 4096" />
+        </div>
+        <div class="form-group">
+          <label>Max Iterations:</label>
+          <input type="number" v-model.number="selectedNode.data.maxIterations" placeholder="e.g. 30" />
+        </div>
 
         <h4>Cron Jobs</h4>
         <div v-for="(job, index) in selectedNode.data.cronJobs" :key="index" class="cron-job">

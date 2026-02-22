@@ -43,8 +43,9 @@ export class ChatEngine {
    * @param {object} systemManager - 系统管理器
    * @param {boolean} isAgentMode - 是否为 Agent 模式（支持自动循环）
    * @param {string} agentId - Agent ID
+   * @param {number} maxIterations - 最大迭代次数
    */
-  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null, isAgentMode = true, agentId = 'default') {
+  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null, isAgentMode = true, agentId = 'default', maxIterations = null) {
     this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
@@ -57,6 +58,7 @@ export class ChatEngine {
     this.llmClient = new LLMClient(llmConfig);
     this.systemManager = systemManager;
     this.agentId = agentId;
+    this.maxIterations = maxIterations;
   }
 
   setOutputHandler(handler) {
@@ -106,7 +108,7 @@ export class ChatEngine {
     const messages = this.session.getMessages();
     let fullResponse = '';
     let iterations = 0;
-    const maxIterations = this.isAgentMode ? 100 : 30; // 增加最大迭代次数以支持长 TODO 流程
+    const maxIterations = this.maxIterations || (this.isAgentMode ? 100 : 30); // 增加最大迭代次数以支持长 TODO 流程
     const tools = this._getTools();
     let isCompleted = false;
 
