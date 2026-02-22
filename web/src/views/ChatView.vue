@@ -18,7 +18,7 @@
         </div>
       </div>
     </div>
-    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+    <div class="flex-1 overflow-y-auto p-4 space-y-4" ref="messagesContainer" @scroll="handleScroll">
       <div v-for="(msg, index) in messages" :key="index" class="flex" :class="msg.role === 'user' ? 'justify-end' : 'justify-start'">
         <div class="max-w-[70%] rounded-lg p-3 shadow-sm" :class="msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white border border-gray-200'">
           <div class="text-xs font-semibold mb-1 opacity-75">{{ msg.role === 'user' ? 'You' : msg.agent }}</div>
@@ -104,7 +104,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { io } from 'socket.io-client'
 
@@ -118,8 +118,29 @@ const isBusy = ref(false)
 const isTodoDrawerOpen = ref(false)
 const todos = ref([])
 const newTodo = ref({ title: '', description: '', agentId: '' })
+const messagesContainer = ref(null)
+let isUserScrolling = false
 let socket = null
 let currentAssistantMessage = null
+
+const handleScroll = () => {
+  if (!messagesContainer.value) return
+  const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
+  // If user scrolls up more than 50px from the bottom, consider it manual scrolling
+  isUserScrolling = scrollHeight - scrollTop - clientHeight > 50
+}
+
+const scrollToBottom = async () => {
+  if (isUserScrolling) return
+  await nextTick()
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+}
+
+watch(messages, () => {
+  scrollToBottom()
+}, { deep: true })
 
 const toggleTodoDrawer = () => {
   isTodoDrawerOpen.value = !isTodoDrawerOpen.value
@@ -209,12 +230,14 @@ onMounted(async () => {
       currentAssistantMessage = messages.value[messages.value.length - 1]
     }
     currentAssistantMessage.content += data.text
+    scrollToBottom()
   })
 
   socket.on('message_end', (data) => {
     if (currentAssistantMessage) {
       currentAssistantMessage = null
     }
+    scrollToBottom()
   })
 
   socket.on('thinking_start', (data) => {
@@ -223,18 +246,21 @@ onMounted(async () => {
       messages.value.push(currentAssistantMessage)
       currentAssistantMessage = messages.value[messages.value.length - 1]
     }
+    scrollToBottom()
   })
 
   socket.on('thinking_delta', (data) => {
     if (currentAssistantMessage) {
       currentAssistantMessage.content += data.text
     }
+    scrollToBottom()
   })
 
   socket.on('thinking_end', () => {
     if (currentAssistantMessage) {
       currentAssistantMessage.content += '\n\n</details>\n\n'
     }
+    scrollToBottom()
   })
 
   socket.on('error', (data) => {
@@ -294,6 +320,8 @@ const sendMessage = () => {
   messages.value.push(msg)
   socket.emit('message', msg)
   inputMessage.value = ''
+  isUserScrolling = false // Reset scrolling state when user sends a message
+  scrollToBottom()
 }
 
 const interruptAgent = () => {

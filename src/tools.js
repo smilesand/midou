@@ -8,6 +8,7 @@ import { exec } from 'child_process';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { listSkillNames, loadSkillContent } from './skills.js';
 import { getLongTermMemory, getRecentMemories } from './memory.js';
+import { addMemory, searchMemory } from './rag/index.js';
 import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './todo.js';
 import dayjs from 'dayjs';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
@@ -70,15 +71,41 @@ export let toolDefinitions = [
     type: 'function',
     function: {
       name: 'search_memory',
-      description: '搜索长期记忆（MEMORY.md），获取历史对话中总结的重要事实、用户偏好或未完成的任务。',
+      description: '使用 RAG (Retrieval-Augmented Generation) 搜索长期记忆，获取历史对话中总结的重要事实、用户偏好或未完成的任务。',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: '搜索关键词（可选，如果不填则返回所有长期记忆）',
+            description: '搜索关键词或自然语言问题',
+          },
+          limit: {
+            type: 'number',
+            description: '返回的记忆条数（默认 5）',
           },
         },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_memory',
+      description: '将重要信息、事实或总结存入 RAG 长期记忆库中。',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            description: '要记忆的内容',
+          },
+          importance: {
+            type: 'number',
+            description: '重要性评分 (1-5，5最重要，默认 3)',
+          },
+        },
+        required: ['content'],
       },
     },
   },
@@ -113,6 +140,31 @@ export let toolDefinitions = [
       parameters: {
         type: 'object',
         properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_message',
+      description: '通过消息总线向其他 Agent 发送消息。',
+      parameters: {
+        type: 'object',
+        properties: {
+          target_agent_id: {
+            type: 'string',
+            description: '目标 Agent 的 ID',
+          },
+          message: {
+            type: 'string',
+            description: '要发送的消息内容',
+          },
+          context: {
+            type: 'object',
+            description: '附加的上下文信息（可选）',
+          },
+        },
+        required: ['target_agent_id', 'message'],
       },
     },
   },
@@ -241,31 +293,6 @@ export let toolDefinitions = [
   {
     type: 'function',
     function: {
-      name: 'create_todo',
-      description: '创建一个新的工作任务（TODO）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: {
-            type: 'string',
-            description: '任务标题',
-          },
-          description: {
-            type: 'string',
-            description: '任务详细描述（可选）',
-          },
-          agent_id: {
-            type: 'string',
-            description: '指派给哪个 Agent 处理（可选，默认指派给自己）',
-          },
-        },
-        required: ['title'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'update_todo',
       description: '更新任务状态或备注。',
       parameters: {
@@ -300,17 +327,6 @@ export let toolDefinitions = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'clear_todos',
-      description: '清空所有工作任务。',
-      parameters: {
-        type: 'object',
-        properties: {},
-      },
-    },
-  },
 ];
 
 /**
@@ -335,13 +351,22 @@ export async function executeTool(name, args, systemManager, agentId) {
 
     // ── 记忆与日志 ──
     case 'search_memory': {
-      const memory = await getLongTermMemory();
-      if (!memory) return '当前没有长期记忆。';
-      if (!args.query) return memory;
-      
-      const lines = memory.split('\n');
-      const results = lines.filter(line => line.toLowerCase().includes(args.query.toLowerCase()));
-      return results.length > 0 ? results.join('\n') : `未找到包含 "${args.query}" 的记忆。`;
+      try {
+        const results = await searchMemory(agentId, args.query, args.limit || 5);
+        if (!results || results.length === 0) return `未找到与 "${args.query}" 相关的记忆。`;
+        
+        return results.map((r, i) => `[记忆 ${i+1}] (相关度: ${(1 - r.distance).toFixed(2)}): ${r.content}`).join('\n\n');
+      } catch (e) {
+        return `搜索记忆失败: ${e.message}`;
+      }
+    }
+    case 'add_memory': {
+      try {
+        const id = await addMemory(agentId, args.content, args.importance || 3);
+        return `已成功将内容存入长期记忆库 (ID: ${id})。`;
+      } catch (e) {
+        return `添加记忆失败: ${e.message}`;
+      }
     }
     case 'read_agent_log': {
       const date = dayjs().subtract(args.days_ago, 'day').format('YYYY-MM-DD');
@@ -360,6 +385,12 @@ export async function executeTool(name, args, systemManager, agentId) {
         return systemManager.getOrganizationRoster(agentId);
       }
       return '组织花名册功能尚未完全实现。';
+
+    case 'send_message':
+      if (systemManager) {
+        return await systemManager.sendMessage(agentId, args.target_agent_id, args.message, args.context);
+      }
+      return '消息总线功能尚未完全实现。';
 
     // ── 技能系统 ──
     case 'list_skills': {
@@ -459,12 +490,6 @@ export async function executeTool(name, args, systemManager, agentId) {
     }
 
     // ── TODO 工作流 ──
-    case 'create_todo': {
-      const targetAgentId = args.agent_id || agentId;
-      const item = await addTodoItem(targetAgentId, args.title, args.description || '');
-      return `已创建任务 [${item.id}]: ${item.title} (指派给: ${targetAgentId})`;
-    }
-
     case 'update_todo': {
       const updates = {};
       if (args.status) updates.status = args.status;
@@ -481,11 +506,6 @@ export async function executeTool(name, args, systemManager, agentId) {
       if (items.length === 0) return '当前没有工作任务';
       const statusIcon = { pending: '□', in_progress: '►', done: '✓', blocked: '✗' };
       return items.map(i => `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}${i.notes ? ' (备注: ' + i.notes + ')' : ''}`).join('\n');
-    }
-
-    case 'clear_todos': {
-      await clearTodoItems(agentId);
-      return '已清空所有工作任务';
     }
 
     default:

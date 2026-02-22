@@ -114,21 +114,12 @@
         </div>
         <div class="flex-1 p-5 overflow-y-auto">
           <div class="mb-4 bg-white p-3 rounded-md border border-gray-100">
-            <label title="If specified, the message must match at least one condition to follow this connection." class="block mb-2 font-semibold text-gray-700 text-sm">Routing Conditions ℹ️:</label>
-            
-            <div v-for="(cond, index) in selectedEdge.data.conditions" :key="index" class="flex flex-col gap-2 mb-2.5 bg-gray-50 p-2.5 rounded-md border border-gray-200">
-              <div class="flex gap-2">
-                <select v-model="cond.type" class="w-24 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500">
-                  <option value="contains">Contains</option>
-                  <option value="regex">Regex</option>
-                </select>
-                <button @click="removeCondition(index)" class="ml-auto bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
-              </div>
-              <input v-model="cond.value" placeholder="Condition value" class="w-full px-2.5 py-2 border border-gray-300 rounded box-border text-sm transition-colors focus:outline-none focus:border-blue-500" />
-            </div>
-            
-            <button @click="addCondition" class="w-full p-2 bg-blue-50 text-blue-600 border border-dashed border-blue-200 rounded-md cursor-pointer font-semibold transition-all hover:bg-blue-100 mt-2">+ Add Condition</button>
-            <p class="text-xs text-gray-500 mt-2">If no conditions are added, all messages will be routed.</p>
+            <p class="text-sm text-gray-700">
+              This connection grants <strong>{{ getSourceName() }}</strong> permission to send messages to <strong>{{ getTargetName() }}</strong> using the <code>send_message</code> tool.
+            </p>
+            <p class="text-xs text-gray-500 mt-2">
+              Routing conditions have been deprecated. Agents must explicitly choose to send messages.
+            </p>
           </div>
         </div>
         <div class="p-4 bg-white border-t border-gray-200">
@@ -285,6 +276,18 @@ const layoutGraph = () => {
   setTimeout(() => {
     fitView({ padding: 0.2 })
   }, 50)
+}
+
+const getSourceName = () => {
+  if (!selectedEdge.value) return ''
+  const sourceNode = elements.value.find(n => n.id === selectedEdge.value.source)
+  return sourceNode?.data?.name || selectedEdge.value.source
+}
+
+const getTargetName = () => {
+  if (!selectedEdge.value) return ''
+  const targetNode = elements.value.find(n => n.id === selectedEdge.value.target)
+  return targetNode?.data?.name || selectedEdge.value.target
 }
 
 const addAgent = () => {

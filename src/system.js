@@ -5,6 +5,7 @@ import { Agent } from './agent.js';
 import { connectMCPServers, disconnectAll as disconnectMCP } from './mcp.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
+import { initRAG, cleanupMemories } from './rag/index.js';
 
 export class SystemManager {
   constructor(io) {
@@ -35,7 +36,14 @@ export class SystemManager {
   }
 
   async init() {
+    await initRAG();
     await this.loadSystem();
+    
+    // Setup daily memory cleanup (forgetting mechanism)
+    cron.schedule('0 3 * * *', async () => {
+      console.log('[System] Running daily memory cleanup...');
+      await cleanupMemories(30, 2); // Forget memories older than 30 days with importance <= 2
+    });
   }
 
   async loadSystem() {
@@ -118,39 +126,63 @@ export class SystemManager {
     if (this.agents.size === 0) return '目前组织里没有其他 Agent。';
     
     let roster = '组织花名册：\n';
-    for (const [id, agent] of this.agents.entries()) {
-      roster += `- [${id}] ${agent.name}: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
-    }
-
+    
     if (requestingAgentId) {
+      // 只能看到自己有权限通讯的 Agent（即有连线指向的 Agent）
       const outgoing = this.connections.filter(c => c.source === requestingAgentId);
       if (outgoing.length > 0) {
-        roster += '\n你可以通过在回复中包含特定的关键词，将消息路由给以下 Agent：\n';
+        roster += '你可以通过 send_message 工具向以下 Agent 发送消息：\n';
         for (const conn of outgoing) {
           const targetAgent = this.agents.get(conn.target);
           if (!targetAgent) continue;
           
-          let conditionsDesc = [];
-          if (conn.data?.conditions && Array.isArray(conn.data.conditions)) {
-            for (const cond of conn.data.conditions) {
-              if (cond.type === 'contains' && cond.value) {
-                conditionsDesc.push(`包含文本 "${cond.value}"`);
-              } else if (cond.type === 'regex' && cond.value) {
-                conditionsDesc.push(`匹配正则 "${cond.value}"`);
-              }
-            }
-          } else if (conn.data?.condition) {
-            conditionsDesc.push(`包含文本 "${conn.data.condition}"`);
-          }
-
-          if (conditionsDesc.length > 0) {
-            roster += `- 发送给 [${targetAgent.name}] (${conn.target})，触发条件：${conditionsDesc.join(' 或 ')}\n`;
-          }
+          roster += `- [${targetAgent.id}] ${targetAgent.name}: ${targetAgent.config.systemPrompt ? targetAgent.config.systemPrompt.slice(0, 100) + '...' : '无描述'}\n`;
         }
+      } else {
+        roster += '你当前没有权限向任何其他 Agent 发送消息。\n';
+      }
+    } else {
+      // 如果没有指定请求者，返回所有 Agent（通常是系统管理员视角）
+      for (const [id, agent] of this.agents.entries()) {
+        roster += `- [${id}] ${agent.name}: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
       }
     }
 
     return roster;
+  }
+
+  async sendMessage(sourceAgentId, targetAgentId, message, context = {}) {
+    const sourceAgent = this.agents.get(sourceAgentId);
+    const targetAgent = this.agents.get(targetAgentId);
+
+    if (!sourceAgent) return `发送失败：找不到源 Agent [${sourceAgentId}]`;
+    if (!targetAgent) return `发送失败：找不到目标 Agent [${targetAgentId}]`;
+
+    // 检查权限（是否有从 source 到 target 的连线）
+    const hasPermission = this.connections.some(c => c.source === sourceAgentId && c.target === targetAgentId);
+    if (!hasPermission) {
+      return `发送失败：你没有权限向 Agent [${targetAgent.name}] 发送消息。请检查组织架构。`;
+    }
+
+    console.log(`[Message Bus] ${sourceAgent.name} -> ${targetAgent.name}: ${message.substring(0, 50)}...`);
+    
+    // 构造标准化的消息结构
+    const payload = {
+      from: sourceAgent.name,
+      from_id: sourceAgentId,
+      timestamp: new Date().toISOString(),
+      content: message,
+      context: context
+    };
+
+    const formattedMessage = `[来自 ${payload.from} 的内部消息]:\n${payload.content}\n\n(附加信息: ${JSON.stringify(payload.context)})`;
+
+    // 异步发送，不阻塞当前 Agent
+    setTimeout(() => {
+      targetAgent.talk(formattedMessage);
+    }, 100);
+
+    return `消息已成功发送给 ${targetAgent.name}。`;
   }
 
   emitEvent(event, data) {
@@ -160,54 +192,9 @@ export class SystemManager {
   }
 
   routeMessage(sourceAgentId, message) {
-    // Find outgoing connections
-    const outgoing = this.connections.filter(c => c.source === sourceAgentId);
-    
-    for (const conn of outgoing) {
-      const targetAgent = this.agents.get(conn.target);
-      if (!targetAgent) continue;
-
-      // Check condition if any
-      let shouldRoute = true;
-      
-      if (conn.data?.conditions && Array.isArray(conn.data.conditions) && conn.data.conditions.length > 0) {
-        shouldRoute = false; // If there are conditions, at least one must match
-        for (const cond of conn.data.conditions) {
-          try {
-            if (cond.type === 'contains' && cond.value) {
-              if (message.includes(cond.value)) {
-                shouldRoute = true;
-                break;
-              }
-            } else if (cond.type === 'regex' && cond.value) {
-              const regex = new RegExp(cond.value);
-              if (regex.test(message)) {
-                shouldRoute = true;
-                break;
-              }
-            }
-          } catch (e) {
-            console.error(`Error evaluating condition for connection ${conn.id}:`, e);
-          }
-        }
-      } else if (conn.data?.condition) {
-        try {
-          shouldRoute = message.includes(conn.data.condition);
-        } catch (e) {
-          console.error(`Error evaluating condition for connection ${conn.id}:`, e);
-        }
-      }
-
-      if (shouldRoute) {
-        console.log(`Routing message from ${sourceAgentId} to ${conn.target}`);
-        const sourceAgent = this.agents.get(sourceAgentId);
-        const sourceName = sourceAgent ? sourceAgent.name : sourceAgentId;
-        // Delay slightly to avoid immediate recursion issues
-        setTimeout(() => {
-          targetAgent.talk(`[来自 ${sourceName} 的消息]:\n${message}`);
-        }, 100);
-      }
-    }
+    // 废弃：不再通过关键字隐式路由消息。
+    // 所有的消息路由现在必须通过 send_message 工具显式调用。
+    return;
   }
 
   async handleUserMessage(message, targetAgentId = null) {
