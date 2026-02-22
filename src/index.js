@@ -55,6 +55,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('interrupt', (data) => {
+    if (!systemManager) return;
+    try {
+      systemManager.interruptAgent(data.targetAgentId);
+    } catch (error) {
+      console.error('Interrupt error:', error);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
@@ -104,7 +113,7 @@ app.get('/api/agent/:id/history', async (req, res) => {
   
   try {
     // 1. Get recent memories from logs (last 1 day to avoid too much text)
-    let recentLogs = await getRecentMemories(1);
+    let recentLogs = await getRecentMemories(1, agent.id);
     
     // 2. Get current session messages
     let sessionMessages = [];
@@ -131,7 +140,7 @@ app.get('/api/agent/:id/history', async (req, res) => {
           }
           if (userMsg && astMsg) {
             // Match the exact format written by logConversation in memory.js
-            const pattern = new RegExp(`### \\d{2}:\\d{2}\\n\\n\\*\\*用户\\*\\*: ${escapeRegExp(userMsg)}\\n\\n\\*\\*midou\\*\\*: ${escapeRegExp(astMsg)}\\n*`, 'g');
+            const pattern = new RegExp(`### \\d{2}:\\d{2}\\n\\n\\*\\*用户\\*\\*: ${escapeRegExp(userMsg)}\\n\\n\\*\\*${escapeRegExp(agent.name)}\\*\\*: ${escapeRegExp(astMsg)}\\n*`, 'g');
             recentLogs = recentLogs.replace(pattern, '');
           }
         }

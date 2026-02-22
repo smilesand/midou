@@ -44,6 +44,14 @@ export class Agent {
     } catch (error) {
       // Ignore if SOUL.md doesn't exist
     }
+
+    // Append Agent Workflow Instructions
+    if (this.config.isAgentMode !== false) {
+      systemPrompt += `\n\n=== Agent 工作流准则 ===
+1. **测试驱动与自我验证**：当你发现需要解决一个不确定的问题时，**绝对不要**首先修改或解决用户的问题。你必须先编写相关的测试代码，进行自我验证。只有在验证通过（或多次尝试失败后），再去通知或解决用户的问题。
+2. **保持专注**：在多轮对话中，请始终保持对当前任务的专注。
+3. **利用记忆**：如果需要更多上下文信息，请使用 \`search_memory\` 或 \`read_agent_log\` 工具查找日志或永久记忆。`;
+    }
     
     const llmConfig = {
       provider: this.config.provider || undefined,
@@ -52,8 +60,10 @@ export class Agent {
       baseURL: this.config.baseURL || undefined,
     };
 
+    const isAgentMode = this.config.isAgentMode !== false;
+
     // Initialize ChatEngine
-    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager);
+    this.engine = new ChatEngine(systemPrompt, null, llmConfig, this.systemManager, isAgentMode);
     
     // Override output handler to route messages through SystemManager
     this.engine.setOutputHandler({
@@ -86,13 +96,15 @@ export class Agent {
   async talk(message) {
     if (this.isBusy) return;
     this.isBusy = true;
+    this.systemManager.emitEvent('agent_busy', { agentId: this.id });
     try {
       const response = await this.engine.talk(message);
-      await logConversation(message, response);
+      await logConversation(this.id, this.name, message, response);
     } catch (error) {
       this.systemManager.emitEvent('error', { agentId: this.id, message: error.message });
     } finally {
       this.isBusy = false;
+      this.systemManager.emitEvent('agent_idle', { agentId: this.id });
     }
   }
 }

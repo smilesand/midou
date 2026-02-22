@@ -181,4 +181,18 @@ export class SystemManager {
       this.emitEvent('error', { message: `Agent ${targetAgentId} not found.` });
     }
   }
+
+  interruptAgent(targetAgentId = null) {
+    let agent = null;
+    if (targetAgentId) {
+      agent = this.agents.get(targetAgentId);
+    } else {
+      agent = this.agents.values().next().value;
+    }
+
+    if (agent && agent.engine) {
+      agent.engine.interrupt();
+      this.emitEvent('system_message', { message: `已发送中断信号给 Agent ${agent.name}` });
+    }
+  }
 }

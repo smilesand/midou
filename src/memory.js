@@ -57,15 +57,18 @@ export function today() {
 /**
  * 获取今日日记的路径
  */
-export function todayJournalPath() {
+export function todayJournalPath(agentId) {
+  if (agentId) {
+    return `agents/${agentId}/memory/${today()}.md`;
+  }
   return `memory/${today()}.md`;
 }
 
 /**
  * 写入今日日记（追加）
  */
-export async function writeJournal(content) {
-  const journalPath = todayJournalPath();
+export async function writeJournal(content, agentId = null) {
+  const journalPath = todayJournalPath(agentId);
   const existing = await readFile(journalPath);
 
   if (!existing) {
@@ -80,21 +83,22 @@ export async function writeJournal(content) {
 /**
  * 记录一次对话到日记
  */
-export async function logConversation(userMessage, assistantMessage) {
+export async function logConversation(agentId, agentName, userMessage, assistantMessage) {
   const time = dayjs().format('HH:mm');
-  const entry = `### ${time}\n\n**用户**: ${userMessage}\n\n**midou**: ${assistantMessage}\n`;
-  await writeJournal(entry);
+  const entry = `### ${time}\n\n**用户**: ${userMessage}\n\n**${agentName}**: ${assistantMessage}\n`;
+  await writeJournal(entry, agentId);
 }
 
 /**
  * 读取最近几天的日记（带长度限制）
  */
-export async function getRecentMemories(days = 2) {
+export async function getRecentMemories(days = 2, agentId = null) {
   const memories = [];
 
   for (let i = 0; i < days; i++) {
     const date = dayjs().subtract(i, 'day').format('YYYY-MM-DD');
-    const journal = await readFile(`memory/${date}.md`);
+    const path = agentId ? `agents/${agentId}/memory/${date}.md` : `memory/${date}.md`;
+    const journal = await readFile(path);
     if (journal) {
       memories.push(journal);
     }

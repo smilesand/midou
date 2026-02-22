@@ -32,6 +32,12 @@
           <input v-model="selectedNode.data.name" @input="updateNodeLabel" />
         </div>
         <div class="form-group">
+          <label>
+            <input type="checkbox" v-model="selectedNode.data.isAgentMode" />
+            Enable Agent Mode (Auto-Loop)
+          </label>
+        </div>
+        <div class="form-group">
           <label>System Prompt:</label>
           <textarea v-model="selectedNode.data.systemPrompt" rows="5"></textarea>
         </div>
@@ -140,6 +146,7 @@ onMounted(async () => {
       position: agent.position || { x: Math.random() * 400, y: Math.random() * 400 },
       data: {
         name: agent.name || agent.id,
+        isAgentMode: agent.data?.isAgentMode !== false,
         systemPrompt: agent.data?.systemPrompt || '',
         provider: agent.data?.provider || 'anthropic',
         model: agent.data?.model || '',
@@ -178,6 +185,7 @@ const addAgent = () => {
     position: { x: 100, y: 100 },
     data: {
       name: `New Agent ${id}`,
+      isAgentMode: true,
       systemPrompt: 'You are a helpful AI assistant.',
       provider: 'anthropic',
       model: '',
@@ -257,6 +265,7 @@ const saveSystem = async () => {
         name: n.data.name,
         position: n.position,
         data: {
+          isAgentMode: n.data.isAgentMode,
           systemPrompt: n.data.systemPrompt,
           provider: n.data.provider,
           model: n.data.model,

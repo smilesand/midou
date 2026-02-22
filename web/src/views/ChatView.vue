@@ -20,8 +20,9 @@
     </div>
     <div class="p-4 bg-white border-t border-gray-200">
       <div class="flex gap-2">
-        <input v-model="inputMessage" @keyup.enter="sendMessage" type="text" class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Type your message..." />
-        <button @click="sendMessage" class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors">Send</button>
+        <input v-model="inputMessage" @keyup.enter="sendMessage" type="text" class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Type your message..." :disabled="isBusy" />
+        <button v-if="!isBusy" @click="sendMessage" class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors">Send</button>
+        <button v-else @click="interruptAgent" class="bg-red-500 text-white px-6 py-2 rounded-lg hover:bg-red-600 transition-colors">Interrupt</button>
       </div>
     </div>
   </div>
@@ -38,6 +39,7 @@ const messages = ref([
 const inputMessage = ref('')
 const agents = ref([])
 const selectedAgentId = ref('')
+const isBusy = ref(false)
 let socket = null
 let currentAssistantMessage = null
 
@@ -47,6 +49,18 @@ onMounted(async () => {
   
   socket = io('http://localhost:3000')
   
+  socket.on('agent_busy', () => {
+    isBusy.value = true
+  })
+
+  socket.on('agent_idle', () => {
+    isBusy.value = false
+  })
+
+  socket.on('system_message', (data) => {
+    messages.value.push({ role: 'system', agent: 'System', content: data.message })
+  })
+
   socket.on('message_delta', (data) => {
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: data.agentId || 'Agent', content: '' }
@@ -128,7 +142,7 @@ const renderMarkdown = (text) => {
 }
 
 const sendMessage = () => {
-  if (!inputMessage.value.trim()) return
+  if (!inputMessage.value.trim() || isBusy.value) return
   
   const msg = {
     role: 'user',
@@ -139,5 +153,10 @@ const sendMessage = () => {
   messages.value.push(msg)
   socket.emit('message', msg)
   inputMessage.value = ''
+}
+
+const interruptAgent = () => {
+  if (!isBusy.value) return
+  socket.emit('interrupt', { targetAgentId: selectedAgentId.value || null })
 }
 </script>

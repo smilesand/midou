@@ -41,8 +41,9 @@ export class ChatEngine {
    * @param {object} outputHandler - 输出处理器
    * @param {object} llmConfig - LLM 配置
    * @param {object} systemManager - 系统管理器
+   * @param {boolean} isAgentMode - 是否为 Agent 模式（支持自动循环）
    */
-  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null) {
+  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null, isAgentMode = true) {
     this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
@@ -50,12 +51,18 @@ export class ChatEngine {
     this.lastThinking = '';
     this.output = outputHandler || dummyOutputHandler;
     this.isBusy = false;
+    this.isInterrupted = false;
+    this.isAgentMode = isAgentMode;
     this.llmClient = new LLMClient(llmConfig);
     this.systemManager = systemManager;
   }
 
   setOutputHandler(handler) {
     this.output = handler || dummyOutputHandler;
+  }
+
+  interrupt() {
+    this.isInterrupted = true;
   }
 
   /**
@@ -77,6 +84,7 @@ export class ChatEngine {
     }
 
     this.isBusy = true;
+    this.isInterrupted = false;
     try {
       this.turnCount++;
       this.session.add('user', userMessage);
@@ -96,7 +104,7 @@ export class ChatEngine {
     const messages = this.session.getMessages();
     let fullResponse = '';
     let iterations = 0;
-    const maxIterations = 30; // 增加最大迭代次数以支持长 TODO 流程
+    const maxIterations = this.isAgentMode ? 100 : 30; // 增加最大迭代次数以支持长 TODO 流程
     const tools = this._getTools();
     let isCompleted = false;
 
@@ -108,6 +116,12 @@ export class ChatEngine {
     };
 
     while (iterations < maxIterations) {
+      if (this.isInterrupted) {
+        this.output.onError('任务已被用户中断。');
+        markComplete(true);
+        break;
+      }
+
       iterations++;
       let completeMessage = null;
       let iterationText = '';
@@ -174,8 +188,20 @@ export class ChatEngine {
             this.session.add('assistant', iterationText);
           }
           
-          markComplete(isTruncated);
-          break;
+          if (this.isAgentMode) {
+            // 在 Agent 模式下，如果没有调用工具，强制它继续思考或结束任务
+            const promptMsg = {
+              role: 'user',
+              content: '你没有调用任何工具。请继续执行任务。如果任务已彻底完成，请调用 finish_task 工具；如果需要用户提供信息或确认，请调用 ask_user 工具。'
+            };
+            this.session.add(promptMsg);
+            messages.push(promptMsg);
+            this.output.onTextDelta('\n[系统提示：等待 Agent 决定下一步行动...]\n');
+            continue;
+          } else {
+            markComplete(isTruncated);
+            break;
+          }
         }
 
         // 有工具调用 → 执行工具
@@ -191,6 +217,8 @@ export class ChatEngine {
         // 将带工具调用的回复添加到 session，确保历史完整
         this.session.add(completeMessage);
         messages.push(completeMessage);
+
+        let shouldBreakLoop = false;
 
         for (const tc of completeMessage.tool_calls) {
           let args;
@@ -230,6 +258,15 @@ export class ChatEngine {
           };
           this.session.add(resultMsg);
           messages.push(resultMsg);
+
+          if (tc.function.name === 'finish_task' || tc.function.name === 'ask_user') {
+            shouldBreakLoop = true;
+          }
+        }
+
+        if (shouldBreakLoop) {
+          markComplete(false);
+          break;
         }
 
         // 如果本轮已经因为 token 限制截断了，且后面还要继续（工具调用后通常会继续），

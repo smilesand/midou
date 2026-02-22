@@ -7,6 +7,8 @@ import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { listSkillNames, loadSkillContent } from './skills.js';
+import { getLongTermMemory, getRecentMemories } from './memory.js';
+import dayjs from 'dayjs';
 
 let todoItems = [];
 
@@ -37,6 +39,81 @@ export function clearTodoItems() {
  * 工具定义（OpenAI Function Calling 格式）
  */
 export const toolDefinitions = [
+  // ── 任务控制 ──────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'finish_task',
+      description: '当任务彻底完成时调用此工具，结束当前任务循环。',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: {
+            type: 'string',
+            description: '任务完成的总结说明',
+          },
+        },
+        required: ['summary'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description: '当尝试了所有方法仍然失败，或者需要用户提供无法通过代码获取的信息（如密码、确认等）时调用此工具，暂停任务并向用户提问。',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: '向用户提出的问题',
+          },
+        },
+        required: ['question'],
+      },
+    },
+  },
+
+  // ── 记忆与日志 ──────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'search_memory',
+      description: '搜索长期记忆（MEMORY.md），获取历史对话中总结的重要事实、用户偏好或未完成的任务。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: '搜索关键词（可选，如果不填则返回所有长期记忆）',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_agent_log',
+      description: '读取指定 Agent 在某天的对话日志。',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent_id: {
+            type: 'string',
+            description: 'Agent 的 ID',
+          },
+          days_ago: {
+            type: 'number',
+            description: '读取几天前的日志（0 表示今天，1 表示昨天，以此类推）',
+          },
+        },
+        required: ['agent_id', 'days_ago'],
+      },
+    },
+  },
+
   // ── 组织协作与通信 ──────────────────────────────
   {
     type: 'function',
@@ -247,6 +324,33 @@ export async function executeTool(name, args, systemManager) {
   }
 
   switch (name) {
+    // ── 任务控制 ──
+    case 'finish_task':
+      return `任务已完成: ${args.summary}`;
+    case 'ask_user':
+      return `等待用户回复: ${args.question}`;
+
+    // ── 记忆与日志 ──
+    case 'search_memory': {
+      const memory = await getLongTermMemory();
+      if (!memory) return '当前没有长期记忆。';
+      if (!args.query) return memory;
+      
+      const lines = memory.split('\n');
+      const results = lines.filter(line => line.toLowerCase().includes(args.query.toLowerCase()));
+      return results.length > 0 ? results.join('\n') : `未找到包含 "${args.query}" 的记忆。`;
+    }
+    case 'read_agent_log': {
+      const date = dayjs().subtract(args.days_ago, 'day').format('YYYY-MM-DD');
+      const logPath = `agents/${args.agent_id}/memory/${date}.md`;
+      try {
+        const content = await fs.readFile(path.join(process.cwd(), 'workspace', logPath), 'utf-8');
+        return content || `Agent ${args.agent_id} 在 ${date} 没有日志记录。`;
+      } catch (e) {
+        return `无法读取 Agent ${args.agent_id} 在 ${date} 的日志。`;
+      }
+    }
+
     // ── 组织协作与通信 ──
     case 'read_organization_roster':
       if (systemManager) {
