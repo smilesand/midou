@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 import { getRecentMemories, addLongTermMemory, writeJournal } from './memory.js';
+import { getTodoItems } from './todo.js';
 import { LLMClient } from './llm.js';
 
 let heartbeatTimer = null;
@@ -36,7 +37,21 @@ export async function beat(systemManager) {
     for (const [agentId, agent] of systemManager.agents.entries()) {
       console.log(`[Heartbeat] 正在反省 Agent: ${agent.name} (${agentId})`);
       
-      // 读取该 Agent 最近的记忆
+      // 1. 检查是否有待办的 TODO
+      try {
+        const todos = await getTodoItems(agentId);
+        const pendingTodos = todos.filter(t => t.status === 'pending' || t.status === 'in_progress');
+        if (pendingTodos.length > 0) {
+          console.log(`[Heartbeat] Agent ${agent.name} 有 ${pendingTodos.length} 个待办任务，触发执行。`);
+          const todoListStr = pendingTodos.map(t => `- [ID: ${t.id}] ${t.title} (状态: ${t.status})\n  描述: ${t.description || '无'}\n  备注: ${t.notes || '无'}`).join('\n');
+          const prompt = `系统提示：你有以下待办任务需要处理：\n${todoListStr}\n\n请执行这些任务，并在完成后使用 update_todo 工具更新状态和备注。如果任务需要分步执行，请先更新状态为 in_progress。`;
+          agent.talk(prompt);
+        }
+      } catch (err) {
+        console.error(`[Heartbeat] 检查 Agent ${agent.name} 的 TODO 失败:`, err.message);
+      }
+
+      // 2. 读取该 Agent 最近的记忆
       const recentMemories = await getRecentMemories(1, agentId); // 读取今天的日记
       if (!recentMemories || recentMemories.trim() === '') {
         console.log(`[Heartbeat] Agent ${agent.name} 今日无新记忆，跳过反省。`);

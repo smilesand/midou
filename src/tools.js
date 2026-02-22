@@ -8,41 +8,8 @@ import { exec } from 'child_process';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { listSkillNames, loadSkillContent } from './skills.js';
 import { getLongTermMemory, getRecentMemories } from './memory.js';
+import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './todo.js';
 import dayjs from 'dayjs';
-
-const todoItemsMap = new Map();
-
-function getAgentTodos(agentId) {
-  if (!todoItemsMap.has(agentId)) {
-    todoItemsMap.set(agentId, []);
-  }
-  return todoItemsMap.get(agentId);
-}
-
-export function addTodoItem(agentId, title, description) {
-  const todos = getAgentTodos(agentId);
-  const id = todos.length + 1;
-  todos.push({ id, title, description, status: 'pending' });
-  return { id, title, description };
-}
-
-export function updateTodoStatus(agentId, id, status) {
-  const todos = getAgentTodos(agentId);
-  const item = todos.find(t => t.id === id);
-  if (item) {
-    item.status = status;
-    return true;
-  }
-  return false;
-}
-
-export function getTodoItems(agentId) {
-  return getAgentTodos(agentId);
-}
-
-export function clearTodoItems(agentId) {
-  todoItemsMap.set(agentId, []);
-}
 
 /**
  * 工具定义（OpenAI Function Calling 格式）
@@ -273,6 +240,10 @@ export const toolDefinitions = [
             type: 'string',
             description: '任务详细描述（可选）',
           },
+          agent_id: {
+            type: 'string',
+            description: '指派给哪个 Agent 处理（可选，默认指派给自己）',
+          },
         },
         required: ['title'],
       },
@@ -282,21 +253,25 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'update_todo',
-      description: '更新任务状态。',
+      description: '更新任务状态或备注。',
       parameters: {
         type: 'object',
         properties: {
           id: {
-            type: 'number',
+            type: 'string',
             description: '任务 ID',
           },
           status: {
             type: 'string',
             enum: ['pending', 'in_progress', 'done', 'blocked'],
-            description: '新状态',
+            description: '新状态（可选）',
+          },
+          notes: {
+            type: 'string',
+            description: '任务备注或执行结果（可选）',
           },
         },
-        required: ['id', 'status'],
+        required: ['id'],
       },
     },
   },
@@ -466,26 +441,31 @@ export async function executeTool(name, args, systemManager, agentId) {
 
     // ── TODO 工作流 ──
     case 'create_todo': {
-      const item = addTodoItem(agentId, args.title, args.description || '');
-      return `已创建任务 [${item.id}]: ${item.title}`;
+      const targetAgentId = args.agent_id || agentId;
+      const item = await addTodoItem(targetAgentId, args.title, args.description || '');
+      return `已创建任务 [${item.id}]: ${item.title} (指派给: ${targetAgentId})`;
     }
 
     case 'update_todo': {
-      const item = updateTodoStatus(agentId, args.id, args.status);
+      const updates = {};
+      if (args.status) updates.status = args.status;
+      if (args.notes) updates.notes = args.notes;
+      
+      const item = await updateTodoStatus(args.id, updates);
       if (!item) return `未找到任务 [${args.id}]`;
       const statusMap = { pending: '待办', in_progress: '进行中', done: '✓ 完成', blocked: '阻塞' };
-      return `任务 [${item.id}] "${item.title}" → ${statusMap[item.status] || item.status}`;
+      return `任务 [${item.id}] "${item.title}" 已更新。当前状态: ${statusMap[item.status] || item.status}`;
     }
 
     case 'list_todos': {
-      const items = getTodoItems(agentId);
+      const items = await getTodoItems(agentId);
       if (items.length === 0) return '当前没有工作任务';
       const statusIcon = { pending: '□', in_progress: '►', done: '✓', blocked: '✗' };
-      return items.map(i => `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}`).join('\n');
+      return items.map(i => `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}${i.notes ? ' (备注: ' + i.notes + ')' : ''}`).join('\n');
     }
 
     case 'clear_todos': {
-      clearTodoItems(agentId);
+      await clearTodoItems(agentId);
       return '已清空所有工作任务';
     }
 

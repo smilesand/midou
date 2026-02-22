@@ -8,6 +8,7 @@ import { SystemManager } from './system.js';
 import { disconnectAll as disconnectMCP } from './mcp.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 import { getRecentMemories } from './memory.js';
+import { getTodoItems, addTodoItem, updateTodoStatus, deleteTodoItem } from './todo.js';
 
 const app = express();
 app.use(cors());
@@ -162,6 +163,55 @@ app.get('/api/agent/:id/history', async (req, res) => {
   }
     
   res.json({ messages });
+});
+
+// API Routes for TODOs
+app.get('/api/todos', async (req, res) => {
+  try {
+    const todos = await getTodoItems();
+    res.json(todos);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/todos', async (req, res) => {
+  try {
+    const { agentId, title, description } = req.body;
+    if (!agentId || !title) {
+      return res.status(400).json({ error: 'agentId and title are required' });
+    }
+    const newTodo = await addTodoItem(agentId, title, description);
+    res.json(newTodo);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/todos/:id', async (req, res) => {
+  try {
+    const updated = await updateTodoStatus(req.params.id, req.body);
+    if (updated) {
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: 'Todo not found' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/todos/:id', async (req, res) => {
+  try {
+    const success = await deleteTodoItem(req.params.id);
+    if (success) {
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: 'Todo not found' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Catch-all route for Vue Router
