@@ -123,17 +123,44 @@ app.get('/api/agent/:id/history', async (req, res) => {
     // 1. Get recent memories from logs (last 1 day to avoid too much text)
     let recentLogs = await getRecentMemories(1, agent.name);
     
-    // 2. Get current session messages
+    // 2. Get current session messages (including tool call details)
     let sessionMessages = [];
     if (agent.engine && agent.engine.session) {
-      sessionMessages = agent.engine.session.getMessages()
-        .filter(m => m.role === 'user' || m.role === 'assistant')
-        .map(m => ({
-          role: m.role,
-          agent: m.role === 'assistant' ? agent.name : 'You',
-          content: m.content || ''
-        }))
-        .filter(m => m.content.trim() !== ''); // Don't send empty messages
+      const rawMessages = agent.engine.session.getMessages()
+        .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool');
+      
+      for (const m of rawMessages) {
+        if (m.role === 'user') {
+          if (m.content && m.content.trim()) {
+            sessionMessages.push({ role: 'user', agent: 'You', content: m.content });
+          }
+        } else if (m.role === 'assistant') {
+          let content = m.content || '';
+          // 将工具调用信息附加到 assistant 消息内容中
+          if (m.tool_calls && m.tool_calls.length > 0) {
+            const toolInfo = m.tool_calls.map(tc => {
+              let argsStr = '';
+              try {
+                const parsed = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments;
+                argsStr = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
+              } catch { argsStr = tc.function.arguments || ''; }
+              return `> 🔧 **${tc.function.name}**(${argsStr})`;
+            }).join('\n');
+            content = content ? content + '\n\n' + toolInfo : toolInfo;
+          }
+          if (content.trim()) {
+            sessionMessages.push({ role: 'assistant', agent: agent.name, content });
+          }
+        } else if (m.role === 'tool') {
+          // 工具返回结果，显示为折叠的详情
+          const truncated = (m.content || '').length > 200 ? m.content.slice(0, 200) + '...' : (m.content || '');
+          sessionMessages.push({
+            role: 'assistant',
+            agent: agent.name,
+            content: `<details><summary>📎 工具返回结果</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n\n</details>`
+          });
+        }
+      }
     }
 
     // 3. Deduplicate: remove session messages from recentLogs to avoid showing them twice

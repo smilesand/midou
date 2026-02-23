@@ -38,9 +38,10 @@ export async function beat(systemManager) {
     for (const [agentId, agent] of systemManager.agents.entries()) {
       console.log(`[Heartbeat] 正在反省 Agent: ${agent.name} (${agentId})`);
       
-      // 1. 检查是否有待办的 TODO
+      // 1. 检查是否有待办的 TODO（同时按 ID 和名称匹配）
       try {
-        const todos = await getTodoItems(agentId);
+        const allTodos = await getTodoItems();
+        const todos = allTodos.filter(t => t.agentId === agentId || t.agentId === agent.name);
         const pendingTodos = todos.filter(t => t.status === 'pending' || t.status === 'in_progress');
         if (pendingTodos.length > 0) {
           console.log(`[Heartbeat] Agent ${agent.name} 有 ${pendingTodos.length} 个待办任务，触发执行。`);

@@ -137,7 +137,7 @@ export class SystemManager {
           const targetAgent = this.agents.get(conn.target);
           if (!targetAgent) continue;
           
-          roster += `- [${targetAgent.id}] ${targetAgent.name}: ${targetAgent.config.systemPrompt ? targetAgent.config.systemPrompt.slice(0, 100) + '...' : '无描述'}\n`;
+          roster += `- ID: ${targetAgent.id} | 名称: ${targetAgent.name} | 简介: ${targetAgent.config.systemPrompt ? targetAgent.config.systemPrompt.slice(0, 100) + '...' : '无描述'}\n`;
         }
       } else {
         roster += '你当前没有权限向任何其他用户发送消息。\n';
@@ -145,7 +145,7 @@ export class SystemManager {
     } else {
       // 如果没有指定请求者，返回所有 Agent（通常是系统管理员视角）
       for (const [id, agent] of this.agents.entries()) {
-        roster += `- [${id}] ${agent.name}: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
+        roster += `- ID: ${id} | 名称: ${agent.name} | 简介: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
       }
     }
 

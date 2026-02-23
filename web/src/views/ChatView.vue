@@ -212,6 +212,13 @@ const resolveAgentName = (agentId) => {
   return agent ? agent.name : agentId
 }
 
+/** 获取当前选中的（或默认的）Agent ID */
+const getActiveAgentId = () => {
+  if (selectedAgentId.value) return selectedAgentId.value
+  if (agents.value && agents.value.length > 0) return agents.value[0].id
+  return null
+}
+
 onMounted(async () => {
   await loadAgents()
   await loadHistory()
@@ -219,10 +226,12 @@ onMounted(async () => {
   socket = io()
   
   socket.on('agent_busy', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     isBusy.value = true
   })
 
   socket.on('agent_idle', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     isBusy.value = false
   })
 
@@ -231,6 +240,7 @@ onMounted(async () => {
   })
 
   socket.on('message_delta', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
       messages.value.push(currentAssistantMessage)
@@ -241,6 +251,7 @@ onMounted(async () => {
   })
 
   socket.on('message_end', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     if (currentAssistantMessage) {
       currentAssistantMessage = null
     }
@@ -248,6 +259,7 @@ onMounted(async () => {
   })
 
   socket.on('thinking_start', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
       messages.value.push(currentAssistantMessage)
@@ -258,13 +270,15 @@ onMounted(async () => {
   })
 
   socket.on('thinking_delta', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     if (currentAssistantMessage) {
       currentAssistantMessage.content += data.text
     }
     scrollToBottom()
   })
 
-  socket.on('thinking_end', () => {
+  socket.on('thinking_end', (data) => {
+    if (data && data.agentId !== getActiveAgentId()) return
     if (currentAssistantMessage) {
       currentAssistantMessage.content += '\n\n</details>\n\n'
     }
@@ -272,6 +286,7 @@ onMounted(async () => {
   })
 
   socket.on('tool_exec', (data) => {
+    if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
       messages.value.push(currentAssistantMessage)
@@ -282,6 +297,7 @@ onMounted(async () => {
   })
 
   socket.on('error', (data) => {
+    if (data.agentId && data.agentId !== getActiveAgentId()) return
     messages.value.push({ role: 'system', agent: 'System', content: `Error: ${data.message}` })
   })
 })

@@ -294,7 +294,7 @@ export let toolDefinitions = [
           },
           agent_id: {
             type: 'string',
-            description: '指派给花名册中的哪位用户处理（可选，默认指派给自己）',
+            description: '指派对象的 Agent ID 或名称均可（可选，默认指派给自己）',
           },
         },
         required: ['title'],
@@ -503,7 +503,12 @@ export async function executeTool(name, args, systemManager, agentId) {
 
     // ── TODO 工作流 ──
     case 'create_todo': {
-      const targetAgentId = args.agent_id || agentId;
+      let targetAgentId = args.agent_id || agentId;
+      // 容错：如果传入的是名称而非 ID，尝试解析为 ID
+      if (systemManager && systemManager.agents && !systemManager.agents.has(targetAgentId)) {
+        const matchedAgent = Array.from(systemManager.agents.values()).find(a => a.name === targetAgentId);
+        if (matchedAgent) targetAgentId = matchedAgent.id;
+      }
       const item = await addTodoItem(targetAgentId, args.title, args.description || '');
       return `已创建任务 [${item.id}]: ${item.title} (指派给: ${targetAgentId})`;
     }
