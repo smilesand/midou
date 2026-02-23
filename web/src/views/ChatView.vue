@@ -292,7 +292,14 @@ onMounted(async () => {
       messages.value.push(currentAssistantMessage)
       currentAssistantMessage = messages.value[messages.value.length - 1]
     }
-    currentAssistantMessage.content += `\n\n> 🔧 *${data.name}*\n\n`
+    let toolLine = `\n\n> 🔧 **${data.name}**`
+    if (data.args && typeof data.args === 'object') {
+      const argsStr = Object.entries(data.args)
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+        .join(', ')
+      if (argsStr) toolLine += ` \`(${argsStr})\``
+    }
+    currentAssistantMessage.content += toolLine + `\n\n`
     scrollToBottom()
   })
 

@@ -228,7 +228,7 @@ export class ChatEngine {
           let args;
           try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
 
-          this.output.onToolExec(tc.function.name);
+          this.output.onToolExec(tc.function.name, args);
 
           // 命令执行需要用户确认
           if (tc.function.name === 'run_command' && args.command) {

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
@@ -8,6 +9,7 @@ import fs from 'fs';
 import { SystemManager } from './system.js';
 import { disconnectAll as disconnectMCP } from './mcp.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
+import { MIDOU_PKG } from '../midou.config.js';
 import { getRecentMemories } from './memory.js';
 import { getTodoItems, addTodoItem, updateTodoStatus, deleteTodoItem } from './todo.js';
 import { loadPlugins } from './plugin.js';
@@ -34,6 +36,20 @@ let systemManager = null;
 async function bootstrap() {
   if (!fs.existsSync(MIDOU_WORKSPACE_DIR)) {
     fs.mkdirSync(MIDOU_WORKSPACE_DIR, { recursive: true });
+  }
+
+  // 首次运行时，从模板目录初始化 workspace
+  const templateDir = path.join(MIDOU_PKG, 'workspace');
+  if (fs.existsSync(templateDir)) {
+    const templateFiles = ['SOUL.md', 'HEARTBEAT.md', 'system.json'];
+    for (const file of templateFiles) {
+      const dest = path.join(MIDOU_WORKSPACE_DIR, file);
+      const src = path.join(templateDir, file);
+      if (!fs.existsSync(dest) && fs.existsSync(src)) {
+        fs.cpSync(src, dest);
+        console.log(`[Init] Created ${file} from template.`);
+      }
+    }
   }
 
   systemManager = new SystemManager(io);

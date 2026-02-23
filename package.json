@@ -1,5 +1,5 @@
 {
-  "name": "midou",
+  "name": "midoumao",
   "version": "0.2.4",
   "description": "midou（咪豆）— 一只拥有灵魂的 AI 伙伴，以我心爱的公狸花猫命名",
   "type": "module",
@@ -9,6 +9,10 @@
   },
   "files": [
     "src/",
+    "web/dist/",
+    "workspace/SOUL.md",
+    "workspace/HEARTBEAT.md",
+    "workspace/system.json",
     "midou.config.js",
     "README.md",
     "LICENSE"
@@ -19,6 +23,7 @@
     "dev:frontend": "cd web && npm run dev",
     "dev": "npm run dev:backend & npm run dev:frontend",
     "build": "cd web && npm run build",
+    "prepublishOnly": "npm run build",
     "test": "node --test test/test-unit.js",
     "test:rag": "node --test test/test-rag.js",
     "test:api": "node --test test/test-api.js",

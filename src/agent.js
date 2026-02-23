@@ -115,7 +115,7 @@ export class Agent {
       },
       onToolStart: (name) => this.systemManager.emitEvent('tool_start', { agentId: this.id, name }),
       onToolEnd: (name, input) => this.systemManager.emitEvent('tool_end', { agentId: this.id, name, input }),
-      onToolExec: (name) => this.systemManager.emitEvent('tool_exec', { agentId: this.id, name }),
+      onToolExec: (name, args) => this.systemManager.emitEvent('tool_exec', { agentId: this.id, name, args }),
       onToolResult: () => this.systemManager.emitEvent('tool_result', { agentId: this.id }),
       onError: (message) => this.systemManager.emitEvent('error', { agentId: this.id, message }),
       confirmCommand: async () => true
