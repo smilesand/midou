@@ -132,7 +132,7 @@ export class SystemManager {
       // 只能看到自己有权限通讯的 Agent（即有连线指向的 Agent）
       const outgoing = this.connections.filter(c => c.source === requestingAgentId);
       if (outgoing.length > 0) {
-        roster += '你可以通过 send_message 工具向以下 Agent 发送消息：\n';
+        roster += '你可以通过 send_message 工具向以下 用户 发送消息：\n';
         for (const conn of outgoing) {
           const targetAgent = this.agents.get(conn.target);
           if (!targetAgent) continue;
@@ -140,7 +140,7 @@ export class SystemManager {
           roster += `- [${targetAgent.id}] ${targetAgent.name}: ${targetAgent.config.systemPrompt ? targetAgent.config.systemPrompt.slice(0, 100) + '...' : '无描述'}\n`;
         }
       } else {
-        roster += '你当前没有权限向任何其他 Agent 发送消息。\n';
+        roster += '你当前没有权限向任何其他用户发送消息。\n';
       }
     } else {
       // 如果没有指定请求者，返回所有 Agent（通常是系统管理员视角）
@@ -176,7 +176,7 @@ export class SystemManager {
       context: context
     };
 
-    const formattedMessage = `[来自 ${payload.from} 的内部消息]:\n${payload.content}\n\n(附加信息: ${JSON.stringify(payload.context)})`;
+    const formattedMessage = `\n${payload.content}\n\n(附加信息: ${JSON.stringify(payload.context)})`;
 
     // 异步发送，不阻塞当前 Agent
     setTimeout(() => {

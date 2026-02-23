@@ -196,7 +196,7 @@ export class ChatEngine {
             // 在 Agent 模式下，如果没有调用工具，强制它继续思考或结束任务
             const promptMsg = {
               role: 'user',
-              content: '你没有调用任何工具。请继续执行任务。如果任务已彻底完成，请调用 finish_task 工具；如果需要用户提供信息或确认，请调用 ask_user 工具。'
+              content: '你没有调用任何工具。请继续执行任务。如果任务已彻底完成，请调用 finish_task 工具结束任务。'
             };
             this.session.add(promptMsg);
             messages.push(promptMsg);

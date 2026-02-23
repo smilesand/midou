@@ -279,6 +279,31 @@ export let toolDefinitions = [
   {
     type: 'function',
     function: {
+      name: 'create_todo',
+      description: '创建一个新的工作任务（TODO）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: '任务标题',
+          },
+          description: {
+            type: 'string',
+            description: '任务详细描述（可选）',
+          },
+          agent_id: {
+            type: 'string',
+            description: '指派给花名册中的哪位用户处理（可选，默认指派给自己）',
+          },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'update_todo',
       description: '更新任务状态或备注。',
       parameters: {
@@ -477,6 +502,12 @@ export async function executeTool(name, args, systemManager, agentId) {
     }
 
     // ── TODO 工作流 ──
+    case 'create_todo': {
+      const targetAgentId = args.agent_id || agentId;
+      const item = await addTodoItem(targetAgentId, args.title, args.description || '');
+      return `已创建任务 [${item.id}]: ${item.title} (指派给: ${targetAgentId})`;
+    }
+    
     case 'update_todo': {
       const updates = {};
       if (args.status) updates.status = args.status;

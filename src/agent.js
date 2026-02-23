@@ -33,7 +33,7 @@ export class Agent {
     // Append organization roster
     const roster = this.systemManager.getOrganizationRoster(this.id);
     if (roster) {
-      systemPrompt += `\n\n=== 组织花名册与消息路由 ===\n${roster}\n注意：你只能通过 send_message 工具向花名册中列出的 Agent 发送消息。不要在普通回复中尝试使用关键字路由。`;
+      systemPrompt += `\n\n=== 组织花名册 ===\n${roster}\n注意：你只能通过 send_message 工具向组织花名册中列出的其他用户发送消息。`;
     }
     
     // Append SOUL.md if it exists
@@ -49,11 +49,11 @@ export class Agent {
 
     // Append Agent Workflow Instructions
     if (this.config.isAgentMode !== false) {
-      systemPrompt += `\n\n=== Agent 工作流准则 ===
-1. **测试驱动与自我验证**：当你发现需要解决一个不确定的问题时，**绝对不要**首先修改或解决用户的问题。你必须先编写相关的测试代码，进行自我验证。只有在验证通过（或多次尝试失败后），再去通知或解决用户的问题。
-2. **保持专注**：在多轮对话中，请始终保持对当前任务的专注。
-3. **利用记忆**：如果需要更多上下文信息，请使用 \`search_memory\` 工具在 Transformer 知识库中搜索，或使用 \`read_agent_log\` 查找日志。
-4. **主动记忆**：当你学到新的重要知识、完成重要任务或发现用户偏好时，主动使用 \`add_memory\` 工具将其存入 Transformer 知识库。`;
+      systemPrompt += `\n\n=== 工作流准则 ===
+1. **工具优先**：在执行任何操作之前，首先考虑是否需要调用工具来获取信息、执行任务或与用户交互。工具是你完成任务的关键手段。
+2. **保持专注**：始终围绕用户的目标和任务进行思考和行动。避免偏离主题或执行与当前任务无关的操作。
+3. **利用记忆**：如果需要更多上下文信息，请使用 \`search_memory\` 工具在知识库中搜索，或使用 \`read_agent_log\` 查找日志。
+4. **主动记忆**：当你学到新的重要知识、完成重要任务或发现用户偏好时，主动使用 \`add_memory\` 工具将其存入知识库。`;
     }
     
     const llmConfig = {
