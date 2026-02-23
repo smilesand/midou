@@ -152,6 +152,59 @@ export class SystemManager {
     return roster;
   }
 
+  /**
+   * 动态创建子 Agent，完成任务后自动汇报给父 Agent 并销毁
+   */
+  async createChildAgent(parentAgentId, { name, systemPrompt, task }) {
+    const parentAgent = this.agents.get(parentAgentId);
+    if (!parentAgent) return `创建失败：找不到父 Agent [${parentAgentId}]`;
+
+    // 复用父 Agent 的 LLM 配置
+    const childId = `child-${Date.now()}`;
+    const childConfig = {
+      id: childId,
+      name: name || `${parentAgent.name}-helper`,
+      data: {
+        isAgentMode: true,
+        systemPrompt: systemPrompt || `你是 ${parentAgent.name} 创建的助手，专门负责完成分配给你的任务。完成后请调用 finish_task 工具提交你的工作成果。`,
+        provider: parentAgent.config.provider,
+        model: parentAgent.config.model,
+        apiKey: parentAgent.config.apiKey,
+        baseURL: parentAgent.config.baseURL,
+        maxTokens: parentAgent.config.maxTokens,
+        maxIterations: parentAgent.config.maxIterations || 10,
+      }
+    };
+
+    const childAgent = new Agent(childConfig, this);
+    await childAgent.init();
+    this.agents.set(childId, childAgent);
+
+    // 建立双向连接
+    this.connections.push({ id: `edge-${parentAgentId}-${childId}`, source: parentAgentId, target: childId });
+    this.connections.push({ id: `edge-${childId}-${parentAgentId}`, source: childId, target: parentAgentId });
+
+    console.log(`[System] 智能体 "${childConfig.name}" (${childId}) 已创建，父 Agent: ${parentAgent.name}`);
+
+    // 异步执行任务，完成后将结果汇报给父 Agent 并销毁智能体
+    setTimeout(async () => {
+      try {
+        const result = await childAgent.engine.talk(task);
+        const report = `[智能体 "${childConfig.name}" 任务汇报]\n任务: ${task}\n结果: ${result}`;
+        parentAgent.talk(report);
+      } catch (err) {
+        parentAgent.talk(`[智能体 "${childConfig.name}" 执行失败] 错误: ${err.message}`);
+      } finally {
+        // 清理智能体
+        this.agents.delete(childId);
+        this.connections = this.connections.filter(c => c.source !== childId && c.target !== childId);
+        console.log(`[System] 智能体 "${childConfig.name}" (${childId}) 已销毁。`);
+      }
+    }, 100);
+
+    return `已创建智能体 "${childConfig.name}" (ID: ${childId})，智能体正在执行任务。完成后会自动汇报结果。你不需要再去自己完成这个任务了。等待智能体的回复即可。`;
+  }
+
   async sendMessage(sourceAgentId, targetAgentId, message, context = {}) {
     const sourceAgent = this.agents.get(sourceAgentId);
     const targetAgent = this.agents.get(targetAgentId);
@@ -176,7 +229,7 @@ export class SystemManager {
       context: context
     };
 
-    const formattedMessage = `\n${payload.content}\n\n(附加信息: ${JSON.stringify(payload.context)})`;
+    const formattedMessage = `[消息来自： ${payload.from}] : ${payload.content}`;
 
     // 异步发送，不阻塞当前 Agent
     setTimeout(() => {

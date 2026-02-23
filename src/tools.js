@@ -133,24 +133,47 @@ export let toolDefinitions = [
     type: 'function',
     function: {
       name: 'send_message',
-      description: '通过消息总线向其他 Agent 发送消息。',
+      description: '通过消息总线向其他成员发送消息。',
       parameters: {
         type: 'object',
         properties: {
           target_agent_id: {
             type: 'string',
-            description: '目标 Agent 的 ID',
+            description: '目标成员的 ID',
           },
           message: {
             type: 'string',
             description: '要发送的消息内容',
           },
-          context: {
-            type: 'object',
-            description: '附加的上下文信息（可选）',
-          },
         },
         required: ['target_agent_id', 'message'],
+      },
+    },
+  },
+
+  // ── 子 Agent 创建 ─────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_agent',
+      description: '如果你的工作复杂，你可以创建一个智能体来帮你完成特定任务。智能体会自动执行任务并汇报结果。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: '智能体的名称（可选，默认自动生成）',
+          },
+          system_prompt: {
+            type: 'string',
+            description: '智能体的系统提示词，定义其角色和能力（可选）',
+          },
+          task: {
+            type: 'string',
+            description: '分配给智能体的具体任务描述',
+          },
+        },
+        required: ['task'],
       },
     },
   },
@@ -403,6 +426,16 @@ export async function executeTool(name, args, systemManager, agentId) {
         return await systemManager.sendMessage(agentId, args.target_agent_id, args.message, args.context);
       }
       return '消息总线功能尚未完全实现。';
+
+    case 'create_agent':
+      if (systemManager) {
+        return await systemManager.createChildAgent(agentId, {
+          name: args.name,
+          systemPrompt: args.system_prompt,
+          task: args.task
+        });
+      }
+      return '子 Agent 创建功能尚未实现。';
 
     // ── 技能系统 ──
     case 'list_skills': {

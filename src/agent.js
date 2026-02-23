@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import { ChatEngine } from './chat.js';
 import { buildSkillsPrompt } from './skills.js';
 import { logConversation } from './memory.js';
-import { addEpisodicMemory } from './rag/index.js';
+import { addEpisodicMemory, searchMemory } from './rag/index.js';
 import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
 
 export class Agent {
@@ -50,7 +50,7 @@ export class Agent {
     // Append Agent Workflow Instructions
     if (this.config.isAgentMode !== false) {
       systemPrompt += `\n\n=== 工作流准则 ===
-1. **工具优先**：在执行任何操作之前，首先考虑是否需要调用工具来获取信息、执行任务或与用户交互。工具是你完成任务的关键手段。
+1. **工具优先**：在执行任何操作之前，首先考虑是否需要调用工具来获取信息、执行任务或与用户交互。工具是你完成任务的关键手段，如果没有合适的工具，就使用现有的工具来创造工具。
 2. **保持专注**：始终围绕用户的目标和任务进行思考和行动。避免偏离主题或执行与当前任务无关的操作。
 3. **利用记忆**：如果需要更多上下文信息，请使用 \`search_memory\` 工具在知识库中搜索，或使用 \`read_agent_log\` 查找日志。
 4. **主动记忆**：当你学到新的重要知识、完成重要任务或发现用户偏好时，主动使用 \`add_memory\` 工具将其存入知识库。`;
@@ -63,6 +63,20 @@ export class Agent {
       baseURL: this.config.baseURL || undefined,
       maxTokens: this.config.maxTokens ? parseInt(this.config.maxTokens, 10) : undefined,
     };
+
+    // 从记忆系统加载热门记忆作为初始上下文
+    try {
+      const hotMemories = await searchMemory(this.id, this.name, 5);
+      if (hotMemories && hotMemories.length > 0) {
+        const memoryContext = hotMemories
+          .map((m, i) => `${i + 1}. ${m.content}`)
+          .join('\n');
+        systemPrompt += `\n\n=== 你的重要记忆 ===\n以下是你记忆中比较重要的信息，请在需要时参考：\n${memoryContext}`;
+        console.log(`[Agent ${this.name}] 已加载 ${hotMemories.length} 条热门记忆。`);
+      }
+    } catch (err) {
+      console.log(`[Agent ${this.name}] 加载热门记忆失败 (可能尚无记忆):`, err.message);
+    }
 
     const isAgentMode = this.config.isAgentMode !== false;
     const maxIterations = this.config.maxIterations ? parseInt(this.config.maxIterations, 10) : undefined;
