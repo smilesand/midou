@@ -1,16 +1,23 @@
 /**
- * ChatEngine — 基于 NodeLLM 的对话引擎
+ * ChatEngine — 基于原生 SDK 的对话引擎
  *
- * 使用 NodeLLM 的 chat.stream() + withTool() 实现流式对话和工具调用。
+ * 使用 llm.streamChat() 实现流式对话 + 自动工具循环。
  * ToolHalt 模式用于 finish_task / ask_user 以中断自动工具循环。
  */
 
-import { createMidouLLM, createChat } from './llm.js';
-import type { NodeLLMInstance, NodeLLMChat } from './llm.js';
-import { createCoreTools, executeTool, getLegacyTools, type ToolContext } from './tools.js';
+import { streamChat } from './llm.js';
+import { quickAsk } from './llm.js';
+import {
+  createCoreTools,
+  executeToolByName,
+  getAllToolDefinitions,
+  ToolHalt,
+  type ToolEntry,
+  type ToolContext,
+} from './tools.js';
+import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory, memoryManager, logConversation, getRecentMemories } from './memory.js';
 import { buildSkillsPrompt } from './skills.js';
-import { getMCPToolDefinitions } from './mcp.js';
 import config from './config.js';
 import type {
   AgentData,
@@ -19,6 +26,7 @@ import type {
   LLMConfig,
   ChatEngineInterface,
   SystemManagerInterface,
+  ToolDefinition,
 } from './types.js';
 
 // ── 默认的 noop OutputHandler ──
@@ -58,7 +66,7 @@ export class ChatEngine implements ChatEngineInterface {
     agentId: string,
     agentName: string,
     agentData: AgentData = {},
-    systemManager: SystemManagerInterface | null = null
+    systemManager: SystemManagerInterface | null = null,
   ) {
     this.agentId = agentId;
     this.agentName = agentName;
@@ -94,134 +102,160 @@ export class ChatEngine implements ChatEngineInterface {
     // 3. 获取 LLM 配置
     const llmConfig = this._getLLMConfig();
 
-    // 4. 创建 NodeLLM 实例和 Chat
-    const llm = createMidouLLM(llmConfig);
-    const model = llmConfig.model || config.llm.model;
-    const chat = llm.chat(model);
-
-    // 5. 设置系统提示
-    chat.system(fullSystemPrompt);
-
-    // 6. 注入历史消息
-    const history = this.session.getMessages().filter((m) => m.role !== 'system');
-    // 除了最后一条（就是刚加的 user 消息），其余作为历史
-    for (const msg of history.slice(0, -1)) {
-      chat.add(msg.role as 'user' | 'assistant', msg.content || '');
-    }
-
-    // 7. 准备工具
+    // 4. 准备工具
     const toolCtx: ToolContext = {
       systemManager: this.systemManager,
       agentId: this.agentId,
     };
     const coreTools = createCoreTools(toolCtx);
+    const allToolDefs = this._getAllToolDefs(coreTools);
 
-    // 注册核心工具
-    for (const tool of coreTools) {
-      chat.withTool(tool);
-    }
+    // 5. 构建消息列表（不含 system，system 由 streamChat 单独处理）
+    const history = this.session.getMessages().filter((m) => m.role !== 'system');
 
-    // 注册 MCP 工具（通过 ToolDefinition 格式）
-    try {
-      const mcpDefs = getMCPToolDefinitions();
-      for (const def of mcpDefs) {
-        const mcpToolName = def.function.name;
-        const toolDef = {
-          type: 'function' as const,
-          function: {
-            name: mcpToolName,
-            description: def.function.description || '',
-            parameters: def.function.parameters || {},
-          },
-          handler: async (args: unknown) => {
-            return await executeTool(mcpToolName, args as Record<string, unknown>, this.systemManager, this.agentId);
-          },
-        };
-        chat.withTool(toolDef);
-      }
-    } catch {
-      // MCP 初始化可能还没完成
-    }
-
-    // 8. 设置生命周期钩子
-    let haltMessage: string | null = null;
-
-    chat.onToolCallStart((toolCall: unknown) => {
-      const tc = toolCall as { function?: { name?: string; arguments?: string } };
-      const toolName = tc?.function?.name || 'unknown';
-      this._outputHandler.onToolStart(toolName);
-    });
-
-    chat.onToolCallEnd((toolCall: unknown, result: unknown) => {
-      const tc = toolCall as { function?: { name?: string; arguments?: string } };
-      const toolName = tc?.function?.name || 'unknown';
-
-      // 解析工具的输入参数（而非输出结果）
-      let toolArgs: unknown;
-      try {
-        toolArgs = tc?.function?.arguments ? JSON.parse(tc.function.arguments) : {};
-      } catch {
-        toolArgs = {};
-      }
-
-      this._outputHandler.onToolEnd(toolName, toolArgs);
-      this._outputHandler.onToolResult();
-
-      // 检测 ToolHalt（finish_task / ask_user 返回 ToolHalt 实例）
-      if (result && typeof result === 'object' && 'content' in result) {
-        const haltObj = result as { content?: string };
-        if (haltObj.content) {
-          haltMessage = haltObj.content;
-        }
-      }
-    });
-
-    // 9. 流式调用
+    // 6. 进入工具循环
     let fullResponse = '';
+    let haltMessage: string | null = null;
+    let iteration = 0;
+    // 用于追踪当前轮次的消息（历史 + 多轮工具调用消息）
+    const conversationMessages: ChatMessage[] = [...history];
 
     try {
-      const stream = chat.stream(userMessage, {
-        maxToolCalls: this._maxIterations,
-      });
+      while (iteration < this._maxIterations && !this._aborted && !haltMessage) {
+        iteration++;
 
-      for await (const chunk of stream) {
-        if (this._aborted) {
+        // 流式调用 LLM
+        const stream = streamChat(
+          llmConfig,
+          fullSystemPrompt,
+          conversationMessages,
+          allToolDefs,
+          llmConfig.maxTokens,
+        );
+
+        let iterationContent = '';
+        let iterationThinking = '';
+        let hasToolCalls = false;
+        let isThinking = false;
+
+        for await (const chunk of stream) {
+          if (this._aborted) break;
+
+          // 文本内容
+          if (chunk.content) {
+            // 如果之前在 thinking 状态，先结束 thinking
+            if (isThinking) {
+              isThinking = false;
+              this._outputHandler.onThinkingEnd(iterationThinking);
+            }
+            iterationContent += chunk.content;
+            fullResponse += chunk.content;
+            this._outputHandler.onTextDelta(chunk.content);
+          }
+
+          // 思维链
+          if (chunk.thinking) {
+            if (!isThinking) {
+              isThinking = true;
+              this._outputHandler.onThinkingStart();
+            }
+            iterationThinking += chunk.thinking;
+            this._outputHandler.onThinkingDelta(chunk.thinking);
+          }
+
+          // 工具调用
+          if (chunk.tool_calls && chunk.tool_calls.length > 0) {
+            hasToolCalls = true;
+
+            // 如果只有 thinking 输出但没有文本，发个空 delta 让前端不卡住
+            if (!iterationContent) {
+              this._outputHandler.onTextDelta('');
+            }
+
+            // 将 assistant 的响应（含 tool_calls）加入消息历史
+            const assistantMsg: ChatMessage = {
+              role: 'assistant',
+              content: iterationContent,
+              tool_calls: chunk.tool_calls,
+            };
+            conversationMessages.push(assistantMsg);
+
+            // 逐个执行工具
+            for (const tc of chunk.tool_calls) {
+              const toolName = tc.function.name;
+              let toolArgs: Record<string, unknown> = {};
+              try {
+                toolArgs = JSON.parse(tc.function.arguments || '{}');
+              } catch { /* empty */ }
+
+              this._outputHandler.onToolStart(toolName);
+
+              const result = await executeToolByName(
+                toolName,
+                toolArgs,
+                coreTools,
+                this.systemManager,
+                this.agentId,
+              );
+
+              // 检查 ToolHalt
+              if (result instanceof ToolHalt) {
+                haltMessage = result.content;
+                this._outputHandler.onToolEnd(toolName, toolArgs);
+                this._outputHandler.onToolResult();
+
+                // 仍然需要将 tool result 加入消息（有些 API 会验证）
+                conversationMessages.push({
+                  role: 'tool',
+                  content: result.content,
+                  tool_call_id: tc.id,
+                });
+                break;
+              }
+
+              const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+
+              this._outputHandler.onToolEnd(toolName, toolArgs);
+              this._outputHandler.onToolExec(toolName, toolArgs);
+              this._outputHandler.onToolResult();
+
+              // 将工具结果加入消息历史
+              conversationMessages.push({
+                role: 'tool',
+                content: resultStr,
+                tool_call_id: tc.id,
+              });
+            }
+          }
+        }
+
+        // 如果 thinking 还未结束，补发 onThinkingEnd
+        if (isThinking) {
+          this._outputHandler.onThinkingEnd(iterationThinking);
+        }
+
+        // 如果没有工具调用，说明模型完成了回答，退出循环
+        if (!hasToolCalls) {
           break;
         }
 
-        // ChatChunk has { content, thinking?, tool_calls?, done?, ... }
-        if (chunk.content) {
-          fullResponse += chunk.content;
-          this._outputHandler.onTextDelta(chunk.content);
+        // 如果有 halt，退出循环
+        if (haltMessage) {
+          break;
         }
-        if (chunk.thinking?.text) {
-          this._outputHandler.onThinkingDelta(chunk.thinking.text);
-        }
-        
-        // If the model only output thinking and then called a tool, we need to ensure
-        // that the frontend receives a text delta so it doesn't get stuck.
-        // We can just send a space or empty string to trigger the message creation.
-        if (chunk.tool_calls && chunk.tool_calls.length > 0 && !fullResponse) {
-          this._outputHandler.onTextDelta('');
-        }
+
+        // 否则继续循环（带着工具结果让模型继续推理）
       }
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-
-      // ToolHalt 是正常的流程控制（兼容旧版抛出异常的方式）
-      if (errorMsg.includes('ToolHalt') || errorMsg.includes('halt')) {
-        haltMessage = errorMsg;
-      } else {
-        this._outputHandler.onError(`LLM 调用失败: ${errorMsg}`);
-        fullResponse = `[错误] ${errorMsg}`;
-      }
+      this._outputHandler.onError(`LLM 调用失败: ${errorMsg}`);
+      fullResponse = `[错误] ${errorMsg}`;
     } finally {
-      // 确保无论成功、失败还是中断，都通知前端流结束
       this._outputHandler.onTextPartComplete();
       this._outputHandler.onTextComplete(this._aborted);
     }
 
-    // 10. 处理 halt 消息（finish_task / ask_user）
+    // 7. 处理 halt 消息（finish_task / ask_user）
     if (haltMessage) {
       if (!fullResponse) {
         fullResponse = haltMessage.replace(/^.*ToolHalt:\s*/, '');
@@ -229,7 +263,7 @@ export class ChatEngine implements ChatEngineInterface {
       }
     }
 
-    // 11. 记录到会话和日记
+    // 8. 记录到会话和日记
     this.session.add('assistant', fullResponse);
     try {
       await logConversation(this.agentName, userMessage, fullResponse);
@@ -250,6 +284,23 @@ export class ChatEngine implements ChatEngineInterface {
       baseURL: this.agentData.baseURL || config.llm.apiBase,
       maxTokens: Number(this.agentData.maxTokens) || config.llm.maxTokens,
     };
+  }
+
+  /**
+   * 合并核心工具 + MCP 工具定义
+   */
+  private _getAllToolDefs(coreTools: ToolEntry[]): ToolDefinition[] {
+    const defs = getAllToolDefinitions(coreTools);
+
+    // MCP 工具
+    try {
+      const mcpDefs = getMCPToolDefinitions();
+      defs.push(...mcpDefs);
+    } catch {
+      // MCP 初始化可能还没完成
+    }
+
+    return defs;
   }
 
   private async _buildSystemPrompt(): Promise<string> {
@@ -280,9 +331,9 @@ export class ChatEngine implements ChatEngineInterface {
     try {
       const memories = await memoryManager.searchMemory(this.agentId, 'recent context', 3);
       if (memories.length > 0) {
-        const memText = memories.map(
-          (m) => `- [${m.type}] ${m.content}`
-        ).join('\n');
+        const memText = memories
+          .map((m) => `- [${m.type}] ${m.content}`)
+          .join('\n');
         parts.push(`## 长期记忆\n\n${memText}`);
       }
     } catch {
@@ -292,3 +343,6 @@ export class ChatEngine implements ChatEngineInterface {
     return parts.join('\n\n');
   }
 }
+
+// Re-export quickAsk for backward compatibility
+export { quickAsk };

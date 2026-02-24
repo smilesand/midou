@@ -57,7 +57,7 @@ describe('Tool System', () => {
       systemManager: null,
       agentId: 'test',
     });
-    const names = tools.map((t) => t.name);
+    const names = tools.map((t) => t.definition.function.name);
 
     const expectedTools = [
       'finish_task',
@@ -301,10 +301,9 @@ describe('Memory Module', () => {
 
 // ---- LLM Module ----
 describe('LLM Module', () => {
-  it('should export NodeLLM wrapper functions', async () => {
+  it('should export native SDK wrapper functions', async () => {
     const llmModule = await import('../src/llm.js');
-    assert.ok(typeof llmModule.createMidouLLM === 'function');
-    assert.ok(typeof llmModule.createChat === 'function');
+    assert.ok(typeof llmModule.streamChat === 'function');
     assert.ok(typeof llmModule.quickAsk === 'function');
     assert.ok(typeof llmModule.getProvider === 'function');
   });

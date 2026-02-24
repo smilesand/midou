@@ -200,9 +200,8 @@ describe('Offline Tests — 配置与模块验证', () => {
 
   it('LLM module should export all required functions', async () => {
     const llm = await import('../src/llm.js');
-    assert.ok(typeof llm.createMidouLLM === 'function');
+    assert.ok(typeof llm.streamChat === 'function');
     assert.ok(typeof llm.quickAsk === 'function');
-    assert.ok(typeof llm.createChat === 'function');
     assert.ok(typeof llm.getProvider === 'function');
   });
 

@@ -1,14 +1,13 @@
 /**
  * 工具系统 — midou 与世界交互的能力
  *
- * 使用 NodeLLM 的 Tool 类定义工具，同时保持与旧版 JSON 格式的兼容性。
+ * 使用纯 JSON 工具定义 + handler 函数，无需任何第三方 Tool 基类。
  * 支持动态注册插件工具、MCP 工具。
  */
 
 import path from 'path';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
-import { Tool, z } from '@node-llm/core';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { listSkillNames, loadSkillContent } from './skills.js';
 import { memoryManager } from './memory.js';
@@ -24,6 +23,22 @@ import type {
   ToolHandler,
   SystemManagerInterface,
 } from './types.js';
+
+// ── ToolHalt：中断工具循环的特殊返回 ──
+
+export class ToolHalt {
+  content: string;
+  constructor(content: string) {
+    this.content = content;
+  }
+}
+
+// ── 工具注册项（定义 + handler） ──
+
+export interface ToolEntry {
+  definition: ToolDefinition;
+  handler: (args: Record<string, unknown>) => Promise<string | ToolHalt>;
+}
 
 // ── 动态工具注册表 ──
 
@@ -43,59 +58,86 @@ export function registerTool(definition: ToolDefinition, handler: ToolHandler): 
 }
 
 // ═══════════════════════════════════════════
-// NodeLLM Tool 类定义
+// 工具执行上下文
 // ═══════════════════════════════════════════
 
-// 工具执行上下文（通过闭包传入）
 export interface ToolContext {
   systemManager: SystemManagerInterface | null;
   agentId: string;
 }
 
+// ═══════════════════════════════════════════
+// 定义核心工具
+// ═══════════════════════════════════════════
+
 /**
- * 创建所有核心工具实例
+ * 定义工具的辅助函数——简化 JSON schema 书写
  */
-export function createCoreTools(ctx: ToolContext): Tool[] {
-  const tools: Tool[] = [];
+function defineTool(
+  name: string,
+  description: string,
+  parameters: Record<string, unknown>,
+  handler: (args: Record<string, unknown>) => Promise<string | ToolHalt>,
+): ToolEntry {
+  return {
+    definition: {
+      type: 'function',
+      function: {
+        name,
+        description,
+        parameters: {
+          type: 'object',
+          ...parameters,
+        },
+      },
+    },
+    handler,
+  };
+}
+
+/**
+ * 创建所有核心工具
+ */
+export function createCoreTools(ctx: ToolContext): ToolEntry[] {
+  const tools: ToolEntry[] = [];
 
   // ── finish_task ──
-  class FinishTaskTool extends Tool {
-    name = 'finish_task';
-    description = '当任务彻底完成时调用此工具，结束当前任务循环。';
-    schema = z.object({
-      summary: z.string().describe('任务完成的总结说明'),
-    });
-    async execute({ summary }: { summary: string }) {
-      return this.halt(`任务已完成: ${summary}`);
-    }
-  }
-  tools.push(new FinishTaskTool());
+  tools.push(defineTool(
+    'finish_task',
+    '当任务彻底完成时调用此工具，结束当前任务循环。',
+    {
+      properties: { summary: { type: 'string', description: '任务完成的总结说明' } },
+      required: ['summary'],
+    },
+    async (args) => new ToolHalt(`任务已完成: ${args.summary}`),
+  ));
 
   // ── ask_user ──
-  class AskUserTool extends Tool {
-    name = 'ask_user';
-    description = '向用户提出问题，等待用户回复。当你需要用户的输入或确认时使用此工具。';
-    schema = z.object({
-      question: z.string().describe('要问用户的问题'),
-    });
-    async execute({ question }: { question: string }) {
-      return this.halt(`[等待用户回复] ${question}`);
-    }
-  }
-  tools.push(new AskUserTool());
+  tools.push(defineTool(
+    'ask_user',
+    '向用户提出问题，等待用户回复。当你需要用户的输入或确认时使用此工具。',
+    {
+      properties: { question: { type: 'string', description: '要问用户的问题' } },
+      required: ['question'],
+    },
+    async (args) => new ToolHalt(`[等待用户回复] ${args.question}`),
+  ));
 
   // ── search_memory ──
-  class SearchMemoryTool extends Tool {
-    name = 'search_memory';
-    description = '搜索长期记忆，获取历史对话中总结的重要事实、用户偏好或未完成的任务。';
-    schema = z.object({
-      query: z.string().describe('搜索关键词或自然语言问题'),
-      limit: z.number().optional().describe('返回的记忆条数（默认 5）'),
-    });
-    async execute({ query, limit }: { query: string; limit?: number }) {
+  tools.push(defineTool(
+    'search_memory',
+    '搜索长期记忆，获取历史对话中总结的重要事实、用户偏好或未完成的任务。',
+    {
+      properties: {
+        query: { type: 'string', description: '搜索关键词或自然语言问题' },
+        limit: { type: 'number', description: '返回的记忆条数（默认 5）' },
+      },
+      required: ['query'],
+    },
+    async (args) => {
       try {
-        const results = await memoryManager.searchMemory(ctx.agentId, query, limit || 5);
-        if (!results || results.length === 0) return `未找到与 "${query}" 相关的记忆。`;
+        const results = await memoryManager.searchMemory(ctx.agentId, args.query as string, (args.limit as number) || 5);
+        if (!results || results.length === 0) return `未找到与 "${args.query}" 相关的记忆。`;
         return results
           .map((r, i) => {
             const weight = (r.attentionWeight * 100).toFixed(1) + '%';
@@ -106,114 +148,129 @@ export function createCoreTools(ctx: ToolContext): Tool[] {
       } catch (e: unknown) {
         return `搜索记忆失败: ${(e as Error).message}`;
       }
-    }
-  }
-  tools.push(new SearchMemoryTool());
+    },
+  ));
 
   // ── add_memory ──
-  class AddMemoryTool extends Tool {
-    name = 'add_memory';
-    description = '将重要信息、事实或总结存入长期记忆库中。';
-    schema = z.object({
-      content: z.string().describe('要记忆的内容'),
-      importance: z.number().optional().describe('重要性评分 (1-5，5最重要，默认 3)'),
-      type: z.enum(['semantic', 'episodic']).optional().describe('记忆类型'),
-    });
-    async execute({ content, importance, type }: { content: string; importance?: number; type?: string }) {
+  tools.push(defineTool(
+    'add_memory',
+    '将重要信息、事实或总结存入长期记忆库中。',
+    {
+      properties: {
+        content: { type: 'string', description: '要记忆的内容' },
+        importance: { type: 'number', description: '重要性评分 (1-5，5最重要，默认 3)' },
+        type: { type: 'string', enum: ['semantic', 'episodic'], description: '记忆类型' },
+      },
+      required: ['content'],
+    },
+    async (args) => {
       try {
-        const id = await memoryManager.addMemory(ctx.agentId, content, type || 'semantic', importance || 3);
-        return `已成功将内容存入记忆库 (ID: ${id}, 类型: ${type || 'semantic'})。`;
+        const id = await memoryManager.addMemory(
+          ctx.agentId,
+          args.content as string,
+          (args.type as string) || 'semantic',
+          (args.importance as number) || 3,
+        );
+        return `已成功将内容存入记忆库 (ID: ${id}, 类型: ${args.type || 'semantic'})。`;
       } catch (e: unknown) {
         return `添加记忆失败: ${(e as Error).message}`;
       }
-    }
-  }
-  tools.push(new AddMemoryTool());
+    },
+  ));
 
   // ── read_agent_log ──
-  class ReadAgentLogTool extends Tool {
-    name = 'read_agent_log';
-    description = '读取指定 Agent 在某天的对话日志。';
-    schema = z.object({
-      agent_name: z.string().describe('Agent 的名称'),
-      days_ago: z.number().describe('读取几天前的日志'),
-    });
-    async execute({ agent_name, days_ago }: { agent_name: string; days_ago: number }) {
-      const date = dayjs().subtract(days_ago, 'day').format('YYYY-MM-DD');
-      const logPath = `agents/${agent_name}/memory/${date}.md`;
+  tools.push(defineTool(
+    'read_agent_log',
+    '读取指定 Agent 在某天的对话日志。',
+    {
+      properties: {
+        agent_name: { type: 'string', description: 'Agent 的名称' },
+        days_ago: { type: 'number', description: '读取几天前的日志' },
+      },
+      required: ['agent_name', 'days_ago'],
+    },
+    async (args) => {
+      const date = dayjs().subtract(args.days_ago as number, 'day').format('YYYY-MM-DD');
+      const logPath = `agents/${args.agent_name}/memory/${date}.md`;
       try {
         const content = await fs.readFile(path.join(MIDOU_WORKSPACE_DIR, logPath), 'utf-8');
-        return content || `Agent ${agent_name} 在 ${date} 没有日志记录。`;
+        return content || `Agent ${args.agent_name} 在 ${date} 没有日志记录。`;
       } catch {
-        return `无法读取 Agent ${agent_name} 在 ${date} 的日志。`;
+        return `无法读取 Agent ${args.agent_name} 在 ${date} 的日志。`;
       }
-    }
-  }
-  tools.push(new ReadAgentLogTool());
+    },
+  ));
 
   // ── read_organization_roster ──
-  class ReadOrganizationRosterTool extends Tool {
-    name = 'read_organization_roster';
-    description = '读取组织花名册，了解组织里有哪些 Agent。';
-    schema = z.object({});
-    async execute() {
+  tools.push(defineTool(
+    'read_organization_roster',
+    '读取组织花名册，了解组织里有哪些 Agent。',
+    { properties: {} },
+    async () => {
       if (ctx.systemManager) {
         return ctx.systemManager.getOrganizationRoster(ctx.agentId);
       }
       return '组织花名册功能尚未初始化。';
-    }
-  }
-  tools.push(new ReadOrganizationRosterTool());
+    },
+  ));
 
   // ── send_message ──
-  class SendMessageTool extends Tool {
-    name = 'send_message';
-    description = '通过消息总线向其他成员发送消息。';
-    schema = z.object({
-      target_agent_id: z.string().describe('目标成员的 ID'),
-      message: z.string().describe('要发送的消息内容'),
-    });
-    async execute({ target_agent_id, message }: { target_agent_id: string; message: string }) {
+  tools.push(defineTool(
+    'send_message',
+    '通过消息总线向其他成员发送消息。',
+    {
+      properties: {
+        target_agent_id: { type: 'string', description: '目标成员的 ID' },
+        message: { type: 'string', description: '要发送的消息内容' },
+      },
+      required: ['target_agent_id', 'message'],
+    },
+    async (args) => {
       if (ctx.systemManager) {
-        return await ctx.systemManager.sendMessage(ctx.agentId, target_agent_id, message);
+        return await ctx.systemManager.sendMessage(ctx.agentId, args.target_agent_id as string, args.message as string);
       }
       return '消息总线功能尚未初始化。';
-    }
-  }
-  tools.push(new SendMessageTool());
+    },
+  ));
 
   // ── create_agent ──
-  class CreateAgentTool extends Tool {
-    name = 'create_agent';
-    description = '创建一个智能体来帮你完成特定任务。';
-    schema = z.object({
-      name: z.string().optional().describe('智能体的名称'),
-      system_prompt: z.string().optional().describe('智能体的系统提示词'),
-      task: z.string().describe('分配给智能体的具体任务描述'),
-    });
-    async execute({ name, system_prompt, task }: { name?: string; system_prompt?: string; task: string }) {
+  tools.push(defineTool(
+    'create_agent',
+    '创建一个智能体来帮你完成特定任务。',
+    {
+      properties: {
+        name: { type: 'string', description: '智能体的名称' },
+        system_prompt: { type: 'string', description: '智能体的系统提示词' },
+        task: { type: 'string', description: '分配给智能体的具体任务描述' },
+      },
+      required: ['task'],
+    },
+    async (args) => {
       if (ctx.systemManager) {
         return await ctx.systemManager.createChildAgent(ctx.agentId, {
-          name,
-          systemPrompt: system_prompt,
-          task,
+          name: args.name as string | undefined,
+          systemPrompt: args.system_prompt as string | undefined,
+          task: args.task as string,
         });
       }
       return '子 Agent 创建功能尚未初始化。';
-    }
-  }
-  tools.push(new CreateAgentTool());
+    },
+  ));
 
   // ── run_command ──
-  class RunCommandTool extends Tool {
-    name = 'run_command';
-    description = '在终端中执行 shell 命令。注意：危险命令会被拦截。';
-    schema = z.object({
-      command: z.string().describe('要执行的 shell 命令'),
-      cwd: z.string().optional().describe('工作目录'),
-      timeout: z.number().optional().describe('超时时间（毫秒），默认 10000'),
-    });
-    async execute({ command, cwd, timeout }: { command: string; cwd?: string; timeout?: number }) {
+  tools.push(defineTool(
+    'run_command',
+    '在终端中执行 shell 命令。注意：危险命令会被拦截。',
+    {
+      properties: {
+        command: { type: 'string', description: '要执行的 shell 命令' },
+        cwd: { type: 'string', description: '工作目录' },
+        timeout: { type: 'number', description: '超时时间（毫秒），默认 10000' },
+      },
+      required: ['command'],
+    },
+    async (args) => {
+      const command = args.command as string;
       const safeCheck = isSafeCommand(command);
       if (safeCheck === 'SUDO_BLOCKED') {
         return '⚠️ 该命令需要管理员权限。请直接将命令输出给用户，让用户手动执行。';
@@ -221,13 +278,13 @@ export function createCoreTools(ctx: ToolContext): Tool[] {
         return '⚠️ 该命令被安全策略拦截。';
       }
 
-      let workDir = cwd;
+      let workDir = args.cwd as string | undefined;
       if (!workDir && ctx.systemManager && ctx.agentId) {
         const agent = ctx.systemManager.agents.get(ctx.agentId);
         if (agent) workDir = agent.workspaceDir;
       }
 
-      const result = await runShellCommand(command, { cwd: workDir, timeout: timeout || 10000 });
+      const result = await runShellCommand(command, { cwd: workDir, timeout: (args.timeout as number) || 10000 });
       let output = '';
       if (result.stdout) output += result.stdout;
       if (result.stderr) output += (output ? '\n' : '') + `[stderr] ${result.stderr}`;
@@ -236,65 +293,73 @@ export function createCoreTools(ctx: ToolContext): Tool[] {
         output = output.slice(0, 8000) + '\n... [输出已截断]';
       }
       return output;
-    }
-  }
-  tools.push(new RunCommandTool());
+    },
+  ));
 
   // ── read_system_file ──
-  class ReadSystemFileTool extends Tool {
-    name = 'read_system_file';
-    description = '读取系统中的任意文件。';
-    schema = z.object({
-      path: z.string().describe('文件路径'),
-      encoding: z.string().optional().describe('编码，默认 utf-8'),
-    });
-    async execute({ path: filePath, encoding }: { path: string; encoding?: string }) {
+  tools.push(defineTool(
+    'read_system_file',
+    '读取系统中的任意文件。',
+    {
+      properties: {
+        path: { type: 'string', description: '文件路径' },
+        encoding: { type: 'string', description: '编码，默认 utf-8' },
+      },
+      required: ['path'],
+    },
+    async (args) => {
       try {
-        const enc = (encoding || 'utf-8') as BufferEncoding;
-        const content = await fs.readFile(filePath, enc);
+        const enc = ((args.encoding as string) || 'utf-8') as BufferEncoding;
+        const content = await fs.readFile(args.path as string, enc);
         if (content.length > 10000) {
           return content.slice(0, 10000) + '\n... [内容已截断，共 ' + content.length + ' 字符]';
         }
         return content;
       } catch (err: unknown) {
-        return `无法读取文件 ${filePath}: ${(err as Error).message}`;
+        return `无法读取文件 ${args.path}: ${(err as Error).message}`;
       }
-    }
-  }
-  tools.push(new ReadSystemFileTool());
+    },
+  ));
 
   // ── write_system_file ──
-  class WriteSystemFileTool extends Tool {
-    name = 'write_system_file';
-    description = '写入系统中的任意文件。如果目录不存在会自动创建。';
-    schema = z.object({
-      path: z.string().describe('文件路径'),
-      content: z.string().describe('要写入的内容'),
-    });
-    async execute({ path: filePath, content }: { path: string; content: string }) {
+  tools.push(defineTool(
+    'write_system_file',
+    '写入系统中的任意文件。如果目录不存在会自动创建。',
+    {
+      properties: {
+        path: { type: 'string', description: '文件路径' },
+        content: { type: 'string', description: '要写入的内容' },
+      },
+      required: ['path', 'content'],
+    },
+    async (args) => {
       try {
+        const filePath = args.path as string;
         await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.writeFile(filePath, content, 'utf-8');
+        await fs.writeFile(filePath, args.content as string, 'utf-8');
         return `已写入 ${filePath}`;
       } catch (err: unknown) {
-        return `无法写入文件 ${filePath}: ${(err as Error).message}`;
+        return `无法写入文件 ${args.path}: ${(err as Error).message}`;
       }
-    }
-  }
-  tools.push(new WriteSystemFileTool());
+    },
+  ));
 
   // ── list_system_dir ──
-  class ListSystemDirTool extends Tool {
-    name = 'list_system_dir';
-    description = '列出系统中的目录内容。';
-    schema = z.object({
-      path: z.string().describe('目录路径'),
-      details: z.boolean().optional().describe('是否显示详细信息'),
-    });
-    async execute({ path: dirPath, details }: { path: string; details?: boolean }) {
+  tools.push(defineTool(
+    'list_system_dir',
+    '列出系统中的目录内容。',
+    {
+      properties: {
+        path: { type: 'string', description: '目录路径' },
+        details: { type: 'boolean', description: '是否显示详细信息' },
+      },
+      required: ['path'],
+    },
+    async (args) => {
+      const dirPath = args.path as string;
       try {
         const entries = await fs.readdir(dirPath, { withFileTypes: true });
-        if (details) {
+        if (args.details) {
           const detailed: string[] = [];
           for (const e of entries) {
             try {
@@ -314,86 +379,88 @@ export function createCoreTools(ctx: ToolContext): Tool[] {
       } catch (err: unknown) {
         return `无法列出目录 ${dirPath}: ${(err as Error).message}`;
       }
-    }
-  }
-  tools.push(new ListSystemDirTool());
+    },
+  ));
 
   // ── list_skills ──
-  class ListSkillsTool extends Tool {
-    name = 'list_skills';
-    description = '列出所有可用的技能。';
-    schema = z.object({});
-    async execute() {
+  tools.push(defineTool(
+    'list_skills',
+    '列出所有可用的技能。',
+    { properties: {} },
+    async () => {
       const skills = await listSkillNames();
       return skills.length === 0 ? '当前没有可用的技能。' : skills.join('\n');
-    }
-  }
-  tools.push(new ListSkillsTool());
+    },
+  ));
 
   // ── load_skill ──
-  class LoadSkillTool extends Tool {
-    name = 'load_skill';
-    description = '加载某个技能的详细指令。';
-    schema = z.object({
-      skill_name: z.string().describe('技能名称'),
-    });
-    async execute({ skill_name }: { skill_name: string }) {
-      const content = await loadSkillContent(skill_name);
-      return content || `未找到技能: ${skill_name}`;
-    }
-  }
-  tools.push(new LoadSkillTool());
+  tools.push(defineTool(
+    'load_skill',
+    '加载某个技能的详细指令。',
+    {
+      properties: { skill_name: { type: 'string', description: '技能名称' } },
+      required: ['skill_name'],
+    },
+    async (args) => {
+      const content = await loadSkillContent(args.skill_name as string);
+      return content || `未找到技能: ${args.skill_name}`;
+    },
+  ));
 
   // ── create_todo ──
-  class CreateTodoTool extends Tool {
-    name = 'create_todo';
-    description = '创建一个新的工作任务（TODO）。';
-    schema = z.object({
-      title: z.string().describe('任务标题'),
-      description: z.string().optional().describe('任务详细描述'),
-      agent_id: z.string().optional().describe('指派对象的 Agent ID 或名称'),
-    });
-    async execute({ title, description, agent_id }: { title: string; description?: string; agent_id?: string }) {
-      let targetAgentId = agent_id || ctx.agentId;
+  tools.push(defineTool(
+    'create_todo',
+    '创建一个新的工作任务（TODO）。',
+    {
+      properties: {
+        title: { type: 'string', description: '任务标题' },
+        description: { type: 'string', description: '任务详细描述' },
+        agent_id: { type: 'string', description: '指派对象的 Agent ID 或名称' },
+      },
+      required: ['title'],
+    },
+    async (args) => {
+      let targetAgentId = (args.agent_id as string) || ctx.agentId;
       if (ctx.systemManager?.agents && !ctx.systemManager.agents.has(targetAgentId)) {
         const matchedAgent = Array.from(ctx.systemManager.agents.values()).find((a) => a.name === targetAgentId);
         if (matchedAgent) targetAgentId = matchedAgent.id;
       }
-      const item = await addTodoItem(targetAgentId, title, description || '');
+      const item = await addTodoItem(targetAgentId, args.title as string, (args.description as string) || '');
       return `已创建任务 [${item.id}]: ${item.title} (指派给: ${targetAgentId})`;
-    }
-  }
-  tools.push(new CreateTodoTool());
+    },
+  ));
 
   // ── update_todo ──
-  class UpdateTodoTool extends Tool {
-    name = 'update_todo';
-    description = '更新任务状态或备注。';
-    schema = z.object({
-      id: z.string().describe('任务 ID'),
-      status: z.enum(['pending', 'in_progress', 'done', 'blocked']).optional().describe('新状态'),
-      notes: z.string().optional().describe('任务备注或执行结果'),
-    });
-    async execute({ id, status, notes }: { id: string; status?: string; notes?: string }) {
+  tools.push(defineTool(
+    'update_todo',
+    '更新任务状态或备注。',
+    {
+      properties: {
+        id: { type: 'string', description: '任务 ID' },
+        status: { type: 'string', enum: ['pending', 'in_progress', 'done', 'blocked'], description: '新状态' },
+        notes: { type: 'string', description: '任务备注或执行结果' },
+      },
+      required: ['id'],
+    },
+    async (args) => {
       const updates: Record<string, string> = {};
-      if (status) updates.status = status;
-      if (notes) updates.notes = notes;
-      const item = await updateTodoStatus(id, updates);
-      if (!item) return `未找到任务 [${id}]`;
+      if (args.status) updates.status = args.status as string;
+      if (args.notes) updates.notes = args.notes as string;
+      const item = await updateTodoStatus(args.id as string, updates);
+      if (!item) return `未找到任务 [${args.id}]`;
       const statusMap: Record<string, string> = {
         pending: '待办', in_progress: '进行中', done: '✓ 完成', blocked: '阻塞',
       };
       return `任务 [${item.id}] "${item.title}" 已更新。状态: ${statusMap[item.status] || item.status}`;
-    }
-  }
-  tools.push(new UpdateTodoTool());
+    },
+  ));
 
   // ── list_todos ──
-  class ListTodosTool extends Tool {
-    name = 'list_todos';
-    description = '列出所有工作任务。';
-    schema = z.object({});
-    async execute() {
+  tools.push(defineTool(
+    'list_todos',
+    '列出所有工作任务。',
+    { properties: {} },
+    async () => {
       const items = await getTodoItems(ctx.agentId);
       if (items.length === 0) return '当前没有工作任务';
       const statusIcon: Record<string, string> = {
@@ -404,49 +471,48 @@ export function createCoreTools(ctx: ToolContext): Tool[] {
           `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}${i.notes ? ' (备注: ' + i.notes + ')' : ''}`
         )
         .join('\n');
-    }
-  }
-  tools.push(new ListTodosTool());
+    },
+  ));
 
   return tools;
+}
+
+// ═══════════════════════════════════════════
+// 获取所有工具定义（用于发给 LLM API）
+// ═══════════════════════════════════════════
+
+/**
+ * 将核心工具 + MCP 工具 + 动态工具合并，返回定义列表
+ */
+export function getAllToolDefinitions(coreTools: ToolEntry[]): ToolDefinition[] {
+  const defs: ToolDefinition[] = coreTools.map((t) => t.definition);
+
+  // 动态注册的工具
+  for (const def of toolDefinitions) {
+    if (dynamicToolHandlers.has(def.function.name)) {
+      defs.push(def);
+    }
+  }
+
+  return defs;
 }
 
 /**
- * 将 MCP 工具和动态注册的工具转换为 NodeLLM 的 function-based 格式
+ * 根据工具名在核心工具 + 动态工具中查找 handler 并执行
  */
-export function getLegacyTools(): Array<Record<string, unknown>> {
-  const tools: Array<Record<string, unknown>> = [];
-
-  // 从 toolDefinitions（插件注册的）转换
-  for (const def of toolDefinitions) {
-    if (!dynamicToolHandlers.has(def.function.name)) continue;
-    tools.push({
-      type: 'function',
-      function: {
-        name: def.function.name,
-        description: def.function.description,
-        parameters: def.function.parameters,
-      },
-      handler: async (args: Record<string, unknown>) => {
-        const handler = dynamicToolHandlers.get(def.function.name)!;
-        return await handler(args, { systemManager: null, agentId: '' });
-      },
-    });
-  }
-
-  return tools;
-}
-
-// ═══════════════════════════════════════════
-// 兼容层：executeTool（用于非 NodeLLM 场景）
-// ═══════════════════════════════════════════
-
-export async function executeTool(
+export async function executeToolByName(
   name: string,
   args: Record<string, unknown>,
+  coreTools: ToolEntry[],
   systemManager: SystemManagerInterface | null,
-  agentId: string
-): Promise<string> {
+  agentId: string,
+): Promise<string | ToolHalt> {
+  // 核心工具
+  const coreTool = coreTools.find((t) => t.definition.function.name === name);
+  if (coreTool) {
+    return await coreTool.handler(args);
+  }
+
   // 动态注册的工具
   if (dynamicToolHandlers.has(name)) {
     const handler = dynamicToolHandlers.get(name)!;
@@ -459,6 +525,32 @@ export async function executeTool(
   }
 
   return `未知工具: ${name}`;
+}
+
+/**
+ * 兼容层：executeTool（用于 MCP 等外部场景）
+ */
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  systemManager: SystemManagerInterface | null,
+  agentId: string,
+): Promise<string> {
+  if (dynamicToolHandlers.has(name)) {
+    const handler = dynamicToolHandlers.get(name)!;
+    return await handler(args, { systemManager, agentId });
+  }
+  if (isMCPTool(name)) {
+    return await executeMCPTool(name, args);
+  }
+  return `未知工具: ${name}`;
+}
+
+/**
+ * 获取动态注册的工具定义列表（插件注册的）
+ */
+export function getLegacyTools(): ToolDefinition[] {
+  return toolDefinitions.filter((def) => dynamicToolHandlers.has(def.function.name));
 }
 
 // ═══════════════════════════════════════════
@@ -492,7 +584,7 @@ interface ShellResult {
 
 function runShellCommand(
   command: string,
-  options: { cwd?: string; timeout?: number } = {}
+  options: { cwd?: string; timeout?: number } = {},
 ): Promise<ShellResult> {
   return new Promise((resolve) => {
     const timeout = options.timeout || 10000;
@@ -506,7 +598,7 @@ function runShellCommand(
           exitCode: error ? (error as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0,
           error: error ? error.message : null,
         });
-      }
+      },
     );
   });
 }

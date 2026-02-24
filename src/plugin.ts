@@ -9,12 +9,13 @@ import fs from 'fs/promises';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
 import { registerTool } from './tools.js';
 import { memoryManager } from './memory.js';
-import { createMidouLLM, quickAsk } from './llm.js';
+import { quickAsk } from './llm.js';
 import type {
   Plugin,
   PluginContext,
   SystemManagerInterface,
   MemoryProvider,
+  LLMConfig,
 } from './types.js';
 import type { Express } from 'express';
 
@@ -80,7 +81,7 @@ export async function loadPlugins(
           });
         },
         // LLM 依赖注入
-        createLLM: (options) => createMidouLLM(options),
+        createLLM: (options?: LLMConfig) => options || {},
         quickAsk,
         // 配置信息
         workspaceDir: MIDOU_WORKSPACE_DIR,
