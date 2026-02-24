@@ -306,7 +306,7 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('tool_exec', (data: { agentId: string; name: string; args?: Record<string, unknown> }) => {
+  socket.on('tool_exec', (data: { agentId: string; name: string; args?: unknown }) => {
     if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
@@ -314,10 +314,16 @@ onMounted(async () => {
       currentAssistantMessage = messages.value[messages.value.length - 1]
     }
     let toolLine = `\n\n> 🔧 **${data.name}**`
-    if (data.args && typeof data.args === 'object') {
-      const argsStr = Object.entries(data.args)
-        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-        .join(', ')
+    if (data.args != null) {
+      let argsStr = ''
+      if (typeof data.args === 'object' && data.args !== null) {
+        argsStr = Object.entries(data.args as Record<string, unknown>)
+          .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+          .join(', ')
+      } else if (typeof data.args === 'string' && data.args.length > 0) {
+        // Truncate long string args (tool results)
+        argsStr = data.args.length > 200 ? data.args.slice(0, 200) + '...' : data.args
+      }
       if (argsStr) toolLine += ` \`(${argsStr})\``
     }
     currentAssistantMessage.content += toolLine + `\n\n`

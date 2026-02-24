@@ -144,20 +144,40 @@ export class ChatEngine implements ChatEngineInterface {
     }
 
     // 8. 设置生命周期钩子
+    let haltMessage: string | null = null;
+
     chat.onToolCallStart((toolCall: unknown) => {
-      const tc = toolCall as { function?: { name?: string } };
-      this._outputHandler.onToolStart(tc?.function?.name || 'unknown');
+      const tc = toolCall as { function?: { name?: string; arguments?: string } };
+      const toolName = tc?.function?.name || 'unknown';
+      this._outputHandler.onToolStart(toolName);
     });
 
     chat.onToolCallEnd((toolCall: unknown, result: unknown) => {
-      const tc = toolCall as { function?: { name?: string } };
-      this._outputHandler.onToolEnd(tc?.function?.name || 'unknown', result);
+      const tc = toolCall as { function?: { name?: string; arguments?: string } };
+      const toolName = tc?.function?.name || 'unknown';
+
+      // 解析工具的输入参数（而非输出结果）
+      let toolArgs: unknown;
+      try {
+        toolArgs = tc?.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+      } catch {
+        toolArgs = {};
+      }
+
+      this._outputHandler.onToolEnd(toolName, toolArgs);
       this._outputHandler.onToolResult();
+
+      // 检测 ToolHalt（finish_task / ask_user 返回 ToolHalt 实例）
+      if (result && typeof result === 'object' && 'content' in result) {
+        const haltObj = result as { content?: string };
+        if (haltObj.content) {
+          haltMessage = haltObj.content;
+        }
+      }
     });
 
     // 9. 流式调用
     let fullResponse = '';
-    let haltMessage: string | null = null;
 
     try {
       const stream = chat.stream(userMessage, {
@@ -166,7 +186,6 @@ export class ChatEngine implements ChatEngineInterface {
 
       for await (const chunk of stream) {
         if (this._aborted) {
-          this._outputHandler.onTextComplete(true);
           break;
         }
 
@@ -179,19 +198,20 @@ export class ChatEngine implements ChatEngineInterface {
           this._outputHandler.onThinkingDelta(chunk.thinking.text);
         }
       }
-
-      this._outputHandler.onTextPartComplete();
-      this._outputHandler.onTextComplete(false);
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
 
-      // ToolHalt 是正常的流程控制
+      // ToolHalt 是正常的流程控制（兼容旧版抛出异常的方式）
       if (errorMsg.includes('ToolHalt') || errorMsg.includes('halt')) {
         haltMessage = errorMsg;
       } else {
         this._outputHandler.onError(`LLM 调用失败: ${errorMsg}`);
         fullResponse = `[错误] ${errorMsg}`;
       }
+    } finally {
+      // 确保无论成功、失败还是中断，都通知前端流结束
+      this._outputHandler.onTextPartComplete();
+      this._outputHandler.onTextComplete(this._aborted);
     }
 
     // 10. 处理 halt 消息（finish_task / ask_user）
