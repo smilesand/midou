@@ -197,6 +197,13 @@ export class ChatEngine implements ChatEngineInterface {
         if (chunk.thinking?.text) {
           this._outputHandler.onThinkingDelta(chunk.thinking.text);
         }
+        
+        // If the model only output thinking and then called a tool, we need to ensure
+        // that the frontend receives a text delta so it doesn't get stuck.
+        // We can just send a space or empty string to trigger the message creation.
+        if (chunk.tool_calls && chunk.tool_calls.length > 0 && !fullResponse) {
+          this._outputHandler.onTextDelta('');
+        }
       }
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -218,6 +225,7 @@ export class ChatEngine implements ChatEngineInterface {
     if (haltMessage) {
       if (!fullResponse) {
         fullResponse = haltMessage.replace(/^.*ToolHalt:\s*/, '');
+        this._outputHandler.onTextDelta(fullResponse);
       }
     }
 
