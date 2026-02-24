@@ -141,22 +141,56 @@ app.get('/api/system', async (_req, res) => {
     agents.push({
       id: agent.id,
       name: agent.name,
+      position: agent.position,
       data: agent.config,
     });
   }
   res.json({
     agents,
     connections: systemManager.connections,
+    mcpServers: (systemManager as any)._mcpServers || {},
   });
 });
 
 app.post('/api/system', async (req, res) => {
   try {
-    await systemManager.saveSystem();
+    const data = req.body as {
+      agents?: Array<{ id: string; name: string; position?: { x: number; y: number }; data?: Record<string, unknown> }>;
+      connections?: Array<Record<string, unknown>>;
+      mcpServers?: Record<string, unknown>;
+    };
+    if (data && (data.agents || data.connections)) {
+      // 前端发送了完整配置，更新并保存
+      await systemManager.updateFromFrontend(data as any);
+    } else {
+      // 克来的：只是储存当前状态
+      await systemManager.saveSystem();
+    }
     res.json({ ok: true });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// Agent 对话历史
+app.get('/api/agent/:agentId/history', async (req, res) => {
+  const { agentId } = req.params;
+  if (!systemManager || agentId === 'null') {
+    res.json({ messages: [] });
+    return;
+  }
+  const agent = systemManager.agents.get(agentId);
+  if (!agent || !agent.engine) {
+    res.json({ messages: [] });
+    return;
+  }
+  const sessionMsgs = agent.engine.session.getMessages();
+  const messages = sessionMsgs.map((m) => ({
+    role: m.role,
+    agent: m.role === 'user' ? 'You' : agent.name,
+    content: m.content,
+  }));
+  res.json({ messages });
 });
 
 // 记忆清理
@@ -172,29 +206,67 @@ app.post('/api/memory/cleanup', async (_req, res) => {
 io.on('connection', (socket) => {
   console.log('[WS] 客户端已连接:', socket.id);
 
-  socket.on('chat:send', async (data: { message: string; agentId?: string }) => {
-    const { message, agentId } = data;
+  // 支持前端两种事件格式：'message' (ChatView) 和 'chat:send' (兼容)
+  const handleMessage = async (data: { message?: string; content?: string; agentId?: string; targetAgentId?: string }) => {
+    const message = data.message || data.content || '';
+    const agentId = data.agentId || data.targetAgentId;
     const targetId = agentId || 'midou';
     const agent = systemManager.agents.get(targetId);
     if (!agent) {
       socket.emit('agent:error', { error: `Agent ${targetId} 不存在` });
+      socket.emit('error', { agentId: targetId, message: `Agent ${targetId} 不存在` });
       return;
     }
 
-    // 构建 Socket 输出处理器
+    // 设置 busy 状态
+    socket.emit('agent_busy', { agentId: targetId });
+
+    // 构建 Socket 输出处理器（发送两套事件名：前端兼容 + agent: 前缀）
     const baseHandler: OutputHandler = {
-      onThinkingStart: () => socket.emit('agent:thinking_start', { agentId: targetId }),
-      onThinkingDelta: (text) => socket.emit('agent:thinking_delta', { agentId: targetId, text }),
-      onThinkingEnd: (fullText) => socket.emit('agent:thinking_end', { agentId: targetId, fullText }),
-      onThinkingHidden: (length) => socket.emit('agent:thinking_hidden', { agentId: targetId, length }),
-      onTextDelta: (text) => socket.emit('agent:text_delta', { agentId: targetId, text }),
-      onTextPartComplete: () => socket.emit('agent:text_part_complete', { agentId: targetId }),
-      onTextComplete: (truncated) => socket.emit('agent:text_complete', { agentId: targetId, truncated }),
-      onToolStart: (name) => socket.emit('agent:tool_start', { agentId: targetId, name }),
-      onToolEnd: (name, input) => socket.emit('agent:tool_end', { agentId: targetId, name, input }),
-      onToolExec: (name, args) => socket.emit('agent:tool_exec', { agentId: targetId, name, args }),
-      onToolResult: () => socket.emit('agent:tool_result', { agentId: targetId }),
-      onError: (msg) => socket.emit('agent:error', { agentId: targetId, error: msg }),
+      onThinkingStart: () => {
+        socket.emit('agent:thinking_start', { agentId: targetId });
+        socket.emit('thinking_start', { agentId: targetId });
+      },
+      onThinkingDelta: (text) => {
+        socket.emit('agent:thinking_delta', { agentId: targetId, text });
+        socket.emit('thinking_delta', { agentId: targetId, text });
+      },
+      onThinkingEnd: (fullText) => {
+        socket.emit('agent:thinking_end', { agentId: targetId, fullText });
+        socket.emit('thinking_end', { agentId: targetId });
+      },
+      onThinkingHidden: (length) => {
+        socket.emit('agent:thinking_hidden', { agentId: targetId, length });
+      },
+      onTextDelta: (text) => {
+        socket.emit('agent:text_delta', { agentId: targetId, text });
+        socket.emit('message_delta', { agentId: targetId, text });
+      },
+      onTextPartComplete: () => {
+        socket.emit('agent:text_part_complete', { agentId: targetId });
+      },
+      onTextComplete: (truncated) => {
+        socket.emit('agent:text_complete', { agentId: targetId, truncated });
+        socket.emit('message_end', { agentId: targetId });
+        socket.emit('agent_idle', { agentId: targetId });
+      },
+      onToolStart: (name) => {
+        socket.emit('agent:tool_start', { agentId: targetId, name });
+      },
+      onToolEnd: (name, input) => {
+        socket.emit('agent:tool_end', { agentId: targetId, name, input });
+        socket.emit('tool_exec', { agentId: targetId, name, args: input });
+      },
+      onToolExec: (name, args) => {
+        socket.emit('agent:tool_exec', { agentId: targetId, name, args });
+      },
+      onToolResult: () => {
+        socket.emit('agent:tool_result', { agentId: targetId });
+      },
+      onError: (msg) => {
+        socket.emit('agent:error', { agentId: targetId, error: msg });
+        socket.emit('error', { agentId: targetId, message: msg });
+      },
       confirmCommand: async (command) => {
         return new Promise((resolve) => {
           socket.emit('agent:confirm_command', { agentId: targetId, command });
@@ -215,12 +287,19 @@ io.on('connection', (socket) => {
       await agent.talk(message);
     } catch (err: unknown) {
       socket.emit('agent:error', { agentId: targetId, error: (err as Error).message });
+      socket.emit('error', { agentId: targetId, message: (err as Error).message });
     }
-  });
+  };
 
-  socket.on('chat:interrupt', (data: { agentId?: string }) => {
-    systemManager.interruptAgent(data.agentId);
-  });
+  // 监听前端事件 (ChatView 发送 'message'，兼容 'chat:send')
+  socket.on('message', handleMessage);
+  socket.on('chat:send', handleMessage);
+
+  const handleInterrupt = (data: { agentId?: string; targetAgentId?: string }) => {
+    systemManager.interruptAgent(data.agentId || data.targetAgentId);
+  };
+  socket.on('interrupt', handleInterrupt);
+  socket.on('chat:interrupt', handleInterrupt);
 
   socket.on('disconnect', () => {
     console.log('[WS] 客户端断开:', socket.id);

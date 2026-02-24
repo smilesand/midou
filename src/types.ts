@@ -271,6 +271,7 @@ export interface AgentInterface {
   id: string;
   name: string;
   config: AgentData;
+  position?: { x: number; y: number };
   workspaceDir: string;
   engine: ChatEngineInterface | null;
   isBusy: boolean;

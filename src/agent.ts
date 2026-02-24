@@ -59,6 +59,7 @@ export class Agent implements AgentInterface {
   id: string;
   name: string;
   config: AgentData;
+  position?: { x: number; y: number };
   workspaceDir: string;
   engine: ChatEngineInterface | null;
   isBusy: boolean;
@@ -73,6 +74,7 @@ export class Agent implements AgentInterface {
     this.id = agentConfig.id;
     this.name = agentConfig.name;
     this.config = agentConfig.data || agentConfig.config || {};
+    this.position = agentConfig.position;
     this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.id);
     this.engine = null;
     this.isBusy = false;

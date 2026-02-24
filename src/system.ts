@@ -20,6 +20,7 @@ import type {
   AgentData,
   AgentInterface,
   ConnectionConfig,
+  MCPServerConfig,
   OutputHandler,
   SystemManagerInterface,
   SystemConfig,
@@ -36,6 +37,7 @@ export class SystemManager implements SystemManagerInterface {
   connections: ConnectionConfig[];
   private _cronJobs: cron.ScheduledTask[];
   private _app: Express;
+  private _mcpServers: Record<string, MCPServerConfig>;
   outputHandlerMiddlewares: Array<(agent: AgentInterface, handler: OutputHandler) => OutputHandler | void>;
 
   constructor(io: SocketIOServer, app: Express) {
@@ -44,6 +46,7 @@ export class SystemManager implements SystemManagerInterface {
     this.connections = [];
     this._cronJobs = [];
     this._app = app;
+    this._mcpServers = {};
     this.outputHandlerMiddlewares = [];
   }
 
@@ -66,6 +69,7 @@ export class SystemManager implements SystemManagerInterface {
 
     // 3. 初始化 MCP
     if (config.mcpServers) {
+      this._mcpServers = config.mcpServers;
       await connectMCPServers(config.mcpServers);
     }
 
@@ -269,18 +273,78 @@ export class SystemManager implements SystemManagerInterface {
       agents: Array.from(this.agents.values()).map((agent) => ({
         id: agent.id,
         name: agent.name,
+        position: agent.position,
         data: agent.config,
       })),
       connections: this.connections,
+      mcpServers: this._mcpServers,
     };
     await fs.mkdir(path.dirname(SYSTEM_CONFIG_FILE), { recursive: true });
     await fs.writeFile(SYSTEM_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+  }
+
+  /**
+   * 从前端数据更新系统配置（保存前端编辑的 Agent 配置、连接关系等）
+   */
+  async updateFromFrontend(data: {
+    agents?: Array<{ id: string; name: string; position?: { x: number; y: number }; data?: AgentData }>;
+    connections?: ConnectionConfig[];
+    mcpServers?: Record<string, MCPServerConfig>;
+  }): Promise<void> {
+    // 更新现有 Agent 的配置和位置
+    if (data.agents) {
+      for (const agentData of data.agents) {
+        const agent = this.agents.get(agentData.id);
+        if (agent) {
+          agent.name = agentData.name;
+          agent.position = agentData.position;
+          if (agentData.data) {
+            agent.updateConfig(agentData.data);
+          }
+        } else {
+          // 新增的 Agent
+          const newAgent = await this._createAgent({
+            id: agentData.id,
+            name: agentData.name,
+            position: agentData.position,
+            data: agentData.data,
+          });
+          newAgent.position = agentData.position;
+        }
+      }
+
+      // 删除前端已移除的 Agent
+      const frontendIds = new Set(data.agents.map(a => a.id));
+      for (const [id] of this.agents) {
+        if (!frontendIds.has(id)) {
+          this.agents.delete(id);
+        }
+      }
+    }
+
+    // 更新连接关系
+    if (data.connections) {
+      this.connections = data.connections;
+    }
+
+    // 更新 MCP
+    if (data.mcpServers) {
+      this._mcpServers = data.mcpServers;
+    }
+
+    // 重新配置 Cron
+    this.stopAllCronJobs();
+    this._setupCronJobs();
+
+    // 保存到磁盘
+    await this.saveSystem();
   }
 
   // ── 内部方法 ──
 
   private async _createAgent(agentConf: AgentConfig): Promise<Agent> {
     const agent = new Agent(agentConf, this);
+    agent.position = agentConf.position;
     await agent.init();
     this.agents.set(agent.id, agent);
     return agent;
