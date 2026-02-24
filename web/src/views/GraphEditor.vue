@@ -26,15 +26,15 @@
       >
         <template #node-agent="props">
           <div class="px-4 py-3 bg-white border-2 border-blue-500 rounded-lg shadow-md min-w-[150px] text-center relative">
-            <Handle type="target" position="left" id="left-target" class="!w-3 !h-3 !bg-blue-500 !-left-1.5" style="top: 30%" />
-            <Handle type="source" position="left" id="left-source" class="!w-3 !h-3 !bg-green-500 !-left-1.5" style="top: 70%" />
+            <Handle type="target" :position="Position.Left" id="left-target" class="!w-3 !h-3 !bg-blue-500 !-left-1.5" style="top: 30%" />
+            <Handle type="source" :position="Position.Left" id="left-source" class="!w-3 !h-3 !bg-green-500 !-left-1.5" style="top: 70%" />
             <div class="font-bold text-gray-800">{{ props.data.name }}</div>
             <div class="text-xs text-gray-500 mt-1">{{ props.data.provider }}</div>
-            <Handle type="target" position="right" id="right-target" class="!w-3 !h-3 !bg-blue-500 !-right-1.5" style="top: 30%" />
-            <Handle type="source" position="right" id="right-source" class="!w-3 !h-3 !bg-green-500 !-right-1.5" style="top: 70%" />
+            <Handle type="target" :position="Position.Right" id="right-target" class="!w-3 !h-3 !bg-blue-500 !-right-1.5" style="top: 30%" />
+            <Handle type="source" :position="Position.Right" id="right-source" class="!w-3 !h-3 !bg-green-500 !-right-1.5" style="top: 70%" />
           </div>
         </template>
-        <Background pattern-color="#aaa" gap="16" />
+        <Background pattern-color="#aaa" :gap="16" />
         <Controls />
         <MiniMap />
       </VueFlow>
@@ -151,9 +151,9 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { VueFlow, useVueFlow, Handle, MarkerType } from '@vue-flow/core'
+import { VueFlow, useVueFlow, Handle, MarkerType, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
@@ -161,22 +161,41 @@ import dagre from 'dagre'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 
+interface CronJob {
+  expression: string
+  prompt: string
+}
+
+interface AgentNodeData {
+  name: string
+  isAgentMode: boolean
+  systemPrompt: string
+  provider: string
+  model: string
+  baseURL: string
+  apiKey: string
+  maxTokens: number | null
+  maxIterations: number | null
+  cronJobs: CronJob[]
+}
+
 const { onConnect: onConnectFlow, fitView } = useVueFlow()
 
-const elements = ref([])
-const selectedNode = ref(null)
-const selectedEdge = ref(null)
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const elements = ref<any[]>([])
+const selectedNode = ref<any>(null)
+const selectedEdge = ref<any>(null)
 const isSaving = ref(false)
 const showMcpConfig = ref(false)
-const mcpServers = ref({})
+const mcpServers = ref<Record<string, unknown>>({})
 const mcpServersJson = ref('{}')
 const mcpJsonError = ref('')
-const fileInput = ref(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 
-const selectedEdgeLabel = computed(() => {
+const selectedEdgeLabel = computed((): string => {
   if (!selectedEdge.value) return ''
-  const sourceNode = elements.value.find(n => n.id === selectedEdge.value.source)
-  const targetNode = elements.value.find(n => n.id === selectedEdge.value.target)
+  const sourceNode = elements.value.find((n: any) => n.id === selectedEdge.value!.source)
+  const targetNode = elements.value.find((n: any) => n.id === selectedEdge.value!.target)
   const sourceName = sourceNode?.data?.name || selectedEdge.value.source
   const targetName = targetNode?.data?.name || selectedEdge.value.target
   return `${sourceName} ➔ ${targetName}`
@@ -192,7 +211,7 @@ onMounted(async () => {
     }
     const data = await response.json()
     
-    const nodes = (data.agents || []).map(agent => ({
+    const nodes: any[] = (data.agents || []).map((agent: any) => ({
       id: agent.id,
       type: 'agent',
       label: agent.name || agent.id,
@@ -211,9 +230,8 @@ onMounted(async () => {
       }
     }))
     
-    const edges = (data.connections || []).map(conn => {
+    const edges: any[] = (data.connections || []).map((conn: any) => {
       let conditions = conn.data?.conditions || []
-      // Migrate old single condition to array format
       if (conn.data?.condition && conditions.length === 0) {
         conditions.push({ type: 'contains', value: conn.data.condition })
       }
@@ -241,7 +259,7 @@ onMounted(async () => {
   }
 })
 
-const layoutGraph = () => {
+const layoutGraph = (): void => {
   const g = new dagre.graphlib.Graph()
   g.setGraph({ rankdir: 'LR', nodesep: 100, ranksep: 200 })
   g.setDefaultEdgeLabel(() => ({}))
@@ -278,19 +296,19 @@ const layoutGraph = () => {
   }, 50)
 }
 
-const getSourceName = () => {
+const getSourceName = (): string => {
   if (!selectedEdge.value) return ''
   const sourceNode = elements.value.find(n => n.id === selectedEdge.value.source)
   return sourceNode?.data?.name || selectedEdge.value.source
 }
 
-const getTargetName = () => {
+const getTargetName = (): string => {
   if (!selectedEdge.value) return ''
   const targetNode = elements.value.find(n => n.id === selectedEdge.value.target)
   return targetNode?.data?.name || selectedEdge.value.target
 }
 
-const addAgent = () => {
+const addAgent = (): void => {
   const id = `agent-${nodeId++}`
   elements.value.push({
     id,
@@ -312,52 +330,52 @@ const addAgent = () => {
   })
 }
 
-const onConnect = (params) => {
+const onConnect = (params: any): void => {
   params.id = `edge-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
   params.data = { conditions: [] }
   params.markerEnd = MarkerType.ArrowClosed
   elements.value.push(params)
 }
 
-const onNodeClick = (event) => {
+const onNodeClick = (event: any): void => {
   selectedEdge.value = null
   // 确保节点对象是响应式的
   const node = elements.value.find(n => n.id === event.node.id)
   selectedNode.value = node || null
 }
 
-const onEdgeClick = (event) => {
+const onEdgeClick = (event: any): void => {
   selectedNode.value = null
   // 确保边对象是响应式的
   const edge = elements.value.find(e => e.id === event.edge.id)
   selectedEdge.value = edge || null
 }
 
-const onNodeDragStop = (event) => {
+const onNodeDragStop = (event: any): void => {
   const node = elements.value.find(n => n.id === event.node.id)
   if (node) {
     node.position = { ...event.node.position }
   }
 }
 
-const updateNodeLabel = () => {
+const updateNodeLabel = (): void => {
   if (selectedNode.value) {
     selectedNode.value.label = selectedNode.value.data.name
   }
 }
 
-const addCronJob = () => {
+const addCronJob = (): void => {
   if (!selectedNode.value.data.cronJobs) {
     selectedNode.value.data.cronJobs = []
   }
   selectedNode.value.data.cronJobs.push({ expression: '', prompt: '' })
 }
 
-const removeCronJob = (index) => {
+const removeCronJob = (index: number): void => {
   selectedNode.value.data.cronJobs.splice(index, 1)
 }
 
-const removeNode = () => {
+const removeNode = (): void => {
   if (selectedNode.value) {
     // Remove the node and any connected edges
     elements.value = elements.value.filter(e => 
@@ -369,31 +387,31 @@ const removeNode = () => {
   }
 }
 
-const removeEdge = () => {
+const removeEdge = (): void => {
   if (selectedEdge.value) {
     elements.value = elements.value.filter(e => e.id !== selectedEdge.value.id)
     selectedEdge.value = null
   }
 }
 
-const openMcpConfig = () => {
+const openMcpConfig = (): void => {
   mcpServersJson.value = JSON.stringify(mcpServers.value, null, 2)
   mcpJsonError.value = ''
   showMcpConfig.value = true
 }
 
-const saveMcpConfig = () => {
+const saveMcpConfig = (): void => {
   try {
     const parsed = JSON.parse(mcpServersJson.value)
     mcpServers.value = parsed
     showMcpConfig.value = false
     saveSystem() // Automatically save and restart
-  } catch (e) {
-    mcpJsonError.value = 'Invalid JSON format: ' + e.message
+  } catch (e: unknown) {
+    mcpJsonError.value = 'Invalid JSON format: ' + (e as Error).message
   }
 }
 
-const getSystemData = () => {
+const getSystemData = (): Record<string, unknown> => {
   const nodes = elements.value.filter(e => !e.source)
   const edges = elements.value.filter(e => e.source)
   
@@ -426,7 +444,7 @@ const getSystemData = () => {
   }
 }
 
-const exportSystem = () => {
+const exportSystem = (): void => {
   const systemData = getSystemData()
   const blob = new Blob([JSON.stringify(systemData, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -439,20 +457,21 @@ const exportSystem = () => {
   URL.revokeObjectURL(url)
 }
 
-const triggerImport = () => {
+const triggerImport = (): void => {
   if (fileInput.value) {
     fileInput.value.click()
   }
 }
 
-const importSystem = async (event) => {
-  const file = event.target.files[0]
+const importSystem = async (event: Event): Promise<void> => {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
   if (!file) return
   
   const reader = new FileReader()
-  reader.onload = async (e) => {
+  reader.onload = async (e: ProgressEvent<FileReader>) => {
     try {
-      const systemData = JSON.parse(e.target.result)
+      const systemData = JSON.parse(e.target?.result as string)
       
       // Send to backend to save and reload
       const response = await fetch('/api/system', {
@@ -475,10 +494,10 @@ const importSystem = async (event) => {
   reader.readAsText(file)
   
   // Reset input
-  event.target.value = ''
+  target.value = ''
 }
 
-async function saveSystem() {
+async function saveSystem(): Promise<void> {
   isSaving.value = true
   try {
     const system = getSystemData()

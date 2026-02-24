@@ -8,13 +8,13 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3000',
-        changeOrigin: true
+        changeOrigin: true,
       },
       '/socket.io': {
         target: 'http://localhost:3000',
         changeOrigin: true,
-        ws: true
-      }
-    }
-  }
+        ws: true,
+      },
+    },
+  },
 })

@@ -1,22 +1,20 @@
 /**
  * 对话引擎 — midou 思考和表达的核心
- * 
- * 支持：
- * - 流式对话输出（消除双重 API 调用）
- * - 工具调用（自我进化、记忆管理、系统命令等）
- * - MCP 扩展工具
- * - 功耗模式感知
- * - 智能会话记忆管理（带上下文摘要）
- * - 多轮对话
- * - 可插拔的输出处理器
  */
 
 import { LLMClient } from './llm.js';
 import { toolDefinitions, executeTool } from './tools.js';
 import { getMCPToolDefinitions } from './mcp.js';
 import { SessionMemory } from './memory.js';
+import type {
+  OutputHandler,
+  LLMConfig,
+  ChatMessage,
+  ToolDefinition,
+  SystemManagerInterface,
+} from './types.js';
 
-const dummyOutputHandler = {
+const dummyOutputHandler: OutputHandler = {
   onThinkingStart: () => {},
   onThinkingDelta: () => {},
   onThinkingEnd: () => {},
@@ -29,24 +27,36 @@ const dummyOutputHandler = {
   onToolExec: () => {},
   onToolResult: () => {},
   onError: () => {},
-  confirmCommand: async () => true
+  confirmCommand: async () => true,
 };
 
 /**
  * 对话引擎
  */
 export class ChatEngine {
-  /**
-   * @param {string} systemPrompt - 系统提示词
-   * @param {object} outputHandler - 输出处理器
-   * @param {object} llmConfig - LLM 配置
-   * @param {object} systemManager - 系统管理器
-   * @param {boolean} isAgentMode - 是否为 Agent 模式（支持自动循环）
-   * @param {string} agentId - Agent ID
-   * @param {number} maxIterations - 最大迭代次数
-   */
-  constructor(systemPrompt, outputHandler = null, llmConfig = {}, systemManager = null, isAgentMode = true, agentId = 'default', maxIterations = null) {
-    this.session = new SessionMemory(); // 使用默认的最大消息数 (80)
+  session: SessionMemory;
+  turnCount: number;
+  showThinking: boolean;
+  lastThinking: string;
+  output: OutputHandler;
+  isBusy: boolean;
+  isInterrupted: boolean;
+  isAgentMode: boolean;
+  llmClient: LLMClient;
+  systemManager: SystemManagerInterface | null;
+  agentId: string;
+  maxIterations: number | null;
+
+  constructor(
+    systemPrompt: string,
+    outputHandler: OutputHandler | null = null,
+    llmConfig: LLMConfig = {},
+    systemManager: SystemManagerInterface | null = null,
+    isAgentMode: boolean = true,
+    agentId: string = 'default',
+    maxIterations: number | null = null
+  ) {
+    this.session = new SessionMemory();
     this.session.add('system', systemPrompt);
     this.turnCount = 0;
     this.showThinking = true;
@@ -61,26 +71,20 @@ export class ChatEngine {
     this.maxIterations = maxIterations;
   }
 
-  setOutputHandler(handler) {
+  setOutputHandler(handler: OutputHandler): void {
     this.output = handler || dummyOutputHandler;
   }
 
-  interrupt() {
+  interrupt(): void {
     this.isInterrupted = true;
   }
 
-  /**
-   * 获取当前模式下可用的工具定义（内置 + MCP，经模式过滤）
-   */
-  _getTools() {
+  _getTools(): ToolDefinition[] {
     const mcpTools = getMCPToolDefinitions();
     return [...toolDefinitions, ...mcpTools];
   }
 
-  /**
-   * 处理用户输入，返回 midou 的回复
-   */
-  async talk(userMessage) {
+  async talk(userMessage: string): Promise<string> {
     if (this.isBusy) {
       const busyMsg = '还在思考中，请稍等一下哦…';
       this.output.onTextDelta(busyMsg + '\n');
@@ -92,27 +96,23 @@ export class ChatEngine {
     try {
       this.turnCount++;
       this.session.add('user', userMessage);
-
-      let response = await this._thinkWithTools();
-
+      const response = await this._thinkWithTools();
       return response;
     } finally {
       this.isBusy = false;
     }
   }
 
-  /**
-   * 带工具的流式思考过程
-   */
-  async _thinkWithTools() {
+  async _thinkWithTools(): Promise<string> {
     const messages = this.session.getMessages();
     let fullResponse = '';
     let iterations = 0;
-    const maxIterations = this.maxIterations || (this.isAgentMode ? 100 : 30); // 增加最大迭代次数以支持长 TODO 流程
+    const maxIterations =
+      this.maxIterations || (this.isAgentMode ? 100 : 30);
     const tools = this._getTools();
     let isCompleted = false;
 
-    const markComplete = (truncated = false) => {
+    const markComplete = (truncated: boolean = false) => {
       if (!isCompleted) {
         this.output.onTextComplete(truncated);
         isCompleted = true;
@@ -127,12 +127,15 @@ export class ChatEngine {
       }
 
       iterations++;
-      let completeMessage = null;
+      let completeMessage: ChatMessage | null = null;
       let iterationText = '';
       let thinkingText = '';
 
       try {
-        for await (const event of this.llmClient.chatStreamWithTools(messages, tools)) {
+        for await (const event of this.llmClient.chatStreamWithTools(
+          messages,
+          tools
+        )) {
           switch (event.type) {
             case 'thinking_start':
               if (this.showThinking) {
@@ -171,36 +174,47 @@ export class ChatEngine {
 
             case 'message_complete':
               completeMessage = event.message;
-              completeMessage._stopReason = event.stopReason;
+              completeMessage._stopReason = event.stopReason || undefined;
               break;
           }
         }
 
-        // 累计本轮文本到总回复
         if (iterationText) {
           fullResponse += (fullResponse ? '\n' : '') + iterationText;
         }
 
-        // 检查截断：除了自然的结束和工具调用外，都视为截断
         const stopReason = completeMessage?._stopReason;
-        const naturalStops = ['end_turn', 'stop', 'stop_sequence', 'tool_use', 'tool_calls'];
-        const isTruncated = stopReason === 'max_tokens' || (stopReason && !naturalStops.includes(stopReason));
+        const naturalStops = [
+          'end_turn',
+          'stop',
+          'stop_sequence',
+          'tool_use',
+          'tool_calls',
+        ];
+        const isTruncated =
+          stopReason === 'max_tokens' ||
+          (stopReason !== undefined &&
+            !naturalStops.includes(stopReason));
 
-        // 没有工具调用 → 最终回复
-        if (!completeMessage?.tool_calls || completeMessage.tool_calls.length === 0) {
+        if (
+          !completeMessage?.tool_calls ||
+          completeMessage.tool_calls.length === 0
+        ) {
           if (iterationText) {
             this.session.add('assistant', iterationText);
           }
-          
+
           if (this.isAgentMode) {
-            // 在 Agent 模式下，如果没有调用工具，强制它继续思考或结束任务
-            const promptMsg = {
+            const promptMsg: ChatMessage = {
               role: 'user',
-              content: '你没有调用任何工具。请继续执行任务。如果任务已彻底完成，请调用 finish_task 工具结束任务。'
+              content:
+                '你没有调用任何工具。请继续执行任务。如果任务已彻底完成，请调用 finish_task 工具结束任务。',
             };
             this.session.add(promptMsg);
             messages.push(promptMsg);
-            this.output.onTextDelta('\n[系统提示：等待 Agent 决定下一步行动...]\n');
+            this.output.onTextDelta(
+              '\n[系统提示：等待 Agent 决定下一步行动...]\n'
+            );
             continue;
           } else {
             markComplete(isTruncated);
@@ -208,33 +222,34 @@ export class ChatEngine {
           }
         }
 
-        // 有工具调用 → 执行工具
-        // 如果有中间文本，先通知输出处理器（但不标记为最终完成）
         if (iterationText && this.output.onTextPartComplete) {
           this.output.onTextPartComplete();
         } else if (isTruncated) {
-          // 如果在工具调用前就被截断了，不得不标记完成
           markComplete(true);
           break;
         }
-        
-        // 将带工具调用的回复添加到 session，确保历史完整
+
         this.session.add(completeMessage);
         messages.push(completeMessage);
 
         let shouldBreakLoop = false;
 
-        for (const tc of completeMessage.tool_calls) {
-          let args;
-          try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
+        for (const tc of completeMessage.tool_calls!) {
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(tc.function.arguments);
+          } catch {
+            args = {};
+          }
 
           this.output.onToolExec(tc.function.name, args);
 
-          // 命令执行需要用户确认
           if (tc.function.name === 'run_command' && args.command) {
-            const confirmed = await this.output.confirmCommand(args.command);
+            const confirmed = await this.output.confirmCommand(
+              args.command as string
+            );
             if (!confirmed) {
-              const rejectMsg = {
+              const rejectMsg: ChatMessage = {
                 role: 'tool',
                 tool_call_id: tc.id,
                 content: '用户拒绝执行该命令。',
@@ -246,16 +261,23 @@ export class ChatEngine {
             }
           }
 
-          let result;
+          let result: string;
           try {
-            result = await executeTool(tc.function.name, args, this.systemManager, this.agentId);
+            result = await executeTool(
+              tc.function.name,
+              args,
+              this.systemManager,
+              this.agentId
+            );
             this.output.onToolResult();
-          } catch (e) {
-            result = `工具执行出错: ${e.message}`;
-            this.output.onError(`工具执行失败: ${e.message}`);
+          } catch (e: unknown) {
+            result = `工具执行出错: ${(e as Error).message}`;
+            this.output.onError(
+              `工具执行失败: ${(e as Error).message}`
+            );
           }
 
-          const resultMsg = {
+          const resultMsg: ChatMessage = {
             role: 'tool',
             tool_call_id: tc.id,
             content: String(result),
@@ -263,7 +285,10 @@ export class ChatEngine {
           this.session.add(resultMsg);
           messages.push(resultMsg);
 
-          if (tc.function.name === 'finish_task' || tc.function.name === 'ask_user') {
+          if (
+            tc.function.name === 'finish_task' ||
+            tc.function.name === 'ask_user'
+          ) {
             shouldBreakLoop = true;
           }
         }
@@ -273,33 +298,27 @@ export class ChatEngine {
           break;
         }
 
-        // 如果本轮已经因为 token 限制截断了，且后面还要继续（工具调用后通常会继续），
-        // 最好在这里中断，或者提醒用户。
         if (isTruncated) {
           markComplete(true);
           break;
         }
 
         iterationText = '';
-
-      } catch (error) {
+      } catch (error: unknown) {
         if (iterationText) {
           markComplete();
         }
-        
-        this.output.onError(`${error.message}，重试中…`);
 
-        // 重要：检查最后一条消息是否是未完成的工具调用
+        this.output.onError(`${(error as Error).message}，重试中…`);
+
         const lastMsgs = this.session.messages;
         const lastMsg = lastMsgs[lastMsgs.length - 1];
         if (lastMsg?.role === 'assistant' && lastMsg.tool_calls) {
-          // 如果最后一条是工具调用但发生了异常（可能是工具不存在或解析错误），
-          // 移除它以避免后续请求因缺失 tool 消息而报错 400
           this.session.removeLast();
         }
 
         fullResponse = await this._streamResponse();
-        isCompleted = true; // _streamResponse handles its own completion
+        isCompleted = true;
         break;
       }
     }
@@ -311,17 +330,17 @@ export class ChatEngine {
     return fullResponse;
   }
 
-  /**
-   * 流式输出回复（无工具，用于 fallback）
-   */
-  async _streamResponse() {
+  async _streamResponse(): Promise<string> {
     const messages = this.session.getMessages();
     let fullResponse = '';
-    let stopReason = null;
+    let stopReason: string | null = null;
     let isCompleted = false;
 
     try {
-      for await (const event of this.llmClient.chatStreamWithTools(messages, [])) {
+      for await (const event of this.llmClient.chatStreamWithTools(
+        messages,
+        []
+      )) {
         if (event.type === 'text_delta') {
           this.output.onTextDelta(event.text);
           fullResponse += event.text;
@@ -331,15 +350,19 @@ export class ChatEngine {
       }
 
       const naturalStops = ['end_turn', 'stop', 'stop_sequence'];
-      const isTruncated = stopReason === 'max_tokens' || (stopReason && !naturalStops.includes(stopReason));
-      
+      const isTruncated =
+        stopReason === 'max_tokens' ||
+        (stopReason !== null && !naturalStops.includes(stopReason));
+
       this.output.onTextComplete(isTruncated);
       isCompleted = true;
       if (fullResponse) {
         this.session.add('assistant', fullResponse);
       }
-    } catch (error) {
-      this.output.onError(`重试失败: ${error.message}`);
+    } catch (error: unknown) {
+      this.output.onError(
+        `重试失败: ${(error as Error).message}`
+      );
     } finally {
       if (!isCompleted) {
         this.output.onTextComplete(false);
@@ -349,10 +372,7 @@ export class ChatEngine {
     return fullResponse;
   }
 
-  /**
-   * 更新系统提示词
-   */
-  updateSystemPrompt(newPrompt) {
+  updateSystemPrompt(newPrompt: string): void {
     const messages = this.session.getMessages();
     if (messages.length > 0 && messages[0].role === 'system') {
       messages[0].content = newPrompt;

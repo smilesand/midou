@@ -103,34 +103,55 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from 'vue'
 import { marked } from 'marked'
-import { io } from 'socket.io-client'
+import { io, type Socket } from 'socket.io-client'
 
-const messages = ref([
+interface ChatMsg {
+  role: string
+  agent: string
+  content: string
+  targetAgentId?: string | null
+}
+
+interface AgentInfo {
+  id: string
+  name: string
+  data?: Record<string, unknown>
+}
+
+interface TodoItem {
+  id: string
+  agentId: string
+  title: string
+  description: string
+  status: string
+  notes: string
+}
+
+const messages = ref<ChatMsg[]>([
   { role: 'system', agent: 'System', content: 'Welcome to Midou Multi-Agent Chat!' }
 ])
 const inputMessage = ref('')
-const agents = ref([])
+const agents = ref<AgentInfo[]>([])
 const selectedAgentId = ref('')
 const isBusy = ref(false)
 const isTodoDrawerOpen = ref(false)
-const todos = ref([])
+const todos = ref<TodoItem[]>([])
 const newTodo = ref({ title: '', description: '', agentId: '' })
-const messagesContainer = ref(null)
+const messagesContainer = ref<HTMLElement | null>(null)
 let isUserScrolling = false
-let socket = null
-let currentAssistantMessage = null
+let socket: Socket | null = null
+let currentAssistantMessage: ChatMsg | null = null
 
-const handleScroll = () => {
+const handleScroll = (): void => {
   if (!messagesContainer.value) return
   const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
-  // If user scrolls up more than 50px from the bottom, consider it manual scrolling
   isUserScrolling = scrollHeight - scrollTop - clientHeight > 50
 }
 
-const scrollToBottom = async () => {
+const scrollToBottom = async (): Promise<void> => {
   if (isUserScrolling) return
   await nextTick()
   if (messagesContainer.value) {
@@ -142,19 +163,19 @@ watch(messages, () => {
   scrollToBottom()
 }, { deep: true })
 
-const toggleTodoDrawer = () => {
+const toggleTodoDrawer = (): void => {
   isTodoDrawerOpen.value = !isTodoDrawerOpen.value
   if (isTodoDrawerOpen.value) {
     loadTodos()
   }
 }
 
-const getAgentName = (id) => {
+const getAgentName = (id: string): string => {
   const agent = agents.value.find(a => a.id === id)
   return agent ? agent.name : 'Unknown'
 }
 
-const loadTodos = async () => {
+const loadTodos = async (): Promise<void> => {
   try {
     const res = await fetch('/api/todos')
     todos.value = await res.json()
@@ -163,7 +184,7 @@ const loadTodos = async () => {
   }
 }
 
-const createTodo = async () => {
+const createTodo = async (): Promise<void> => {
   if (!newTodo.value.title || !newTodo.value.agentId) return
   try {
     const res = await fetch('/api/todos', {
@@ -180,7 +201,7 @@ const createTodo = async () => {
   }
 }
 
-const updateTodo = async (todo) => {
+const updateTodo = async (todo: TodoItem): Promise<void> => {
   try {
     await fetch(`/api/todos/${todo.id}`, {
       method: 'PUT',
@@ -192,7 +213,7 @@ const updateTodo = async (todo) => {
   }
 }
 
-const deleteTodo = async (id) => {
+const deleteTodo = async (id: string): Promise<void> => {
   try {
     const res = await fetch(`/api/todos/${id}`, {
       method: 'DELETE'
@@ -206,14 +227,14 @@ const deleteTodo = async (id) => {
 }
 
 /** Resolve agentId (e.g. 'agent-1') to human-readable name */
-const resolveAgentName = (agentId) => {
+const resolveAgentName = (agentId: string): string => {
   if (!agentId) return 'Agent'
   const agent = agents.value.find(a => a.id === agentId)
   return agent ? agent.name : agentId
 }
 
 /** 获取当前选中的（或默认的）Agent ID */
-const getActiveAgentId = () => {
+const getActiveAgentId = (): string | null => {
   if (selectedAgentId.value) return selectedAgentId.value
   if (agents.value && agents.value.length > 0) return agents.value[0].id
   return null
@@ -225,21 +246,21 @@ onMounted(async () => {
   
   socket = io()
   
-  socket.on('agent_busy', (data) => {
+  socket.on('agent_busy', (data: { agentId: string }) => {
     if (data.agentId !== getActiveAgentId()) return
     isBusy.value = true
   })
 
-  socket.on('agent_idle', (data) => {
+  socket.on('agent_idle', (data: { agentId: string }) => {
     if (data.agentId !== getActiveAgentId()) return
     isBusy.value = false
   })
 
-  socket.on('system_message', (data) => {
+  socket.on('system_message', (data: { message: string }) => {
     messages.value.push({ role: 'system', agent: 'System', content: data.message })
   })
 
-  socket.on('message_delta', (data) => {
+  socket.on('message_delta', (data: { agentId: string; text: string }) => {
     if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
@@ -250,7 +271,7 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('message_end', (data) => {
+  socket.on('message_end', (data: { agentId: string }) => {
     if (data.agentId !== getActiveAgentId()) return
     if (currentAssistantMessage) {
       currentAssistantMessage = null
@@ -258,7 +279,7 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('thinking_start', (data) => {
+  socket.on('thinking_start', (data: { agentId: string }) => {
     if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
@@ -269,7 +290,7 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('thinking_delta', (data) => {
+  socket.on('thinking_delta', (data: { agentId: string; text: string }) => {
     if (data.agentId !== getActiveAgentId()) return
     if (currentAssistantMessage) {
       currentAssistantMessage.content += data.text
@@ -277,7 +298,7 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('thinking_end', (data) => {
+  socket.on('thinking_end', (data: { agentId: string } | null) => {
     if (data && data.agentId !== getActiveAgentId()) return
     if (currentAssistantMessage) {
       currentAssistantMessage.content += '\n\n</details>\n\n'
@@ -285,7 +306,7 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('tool_exec', (data) => {
+  socket.on('tool_exec', (data: { agentId: string; name: string; args?: Record<string, unknown> }) => {
     if (data.agentId !== getActiveAgentId()) return
     if (!currentAssistantMessage) {
       currentAssistantMessage = { role: 'assistant', agent: resolveAgentName(data.agentId), content: '' }
@@ -303,13 +324,13 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  socket.on('error', (data) => {
+  socket.on('error', (data: { agentId?: string; message: string }) => {
     if (data.agentId && data.agentId !== getActiveAgentId()) return
     messages.value.push({ role: 'system', agent: 'System', content: `Error: ${data.message}` })
   })
 })
 
-const loadAgents = async () => {
+const loadAgents = async (): Promise<void> => {
   try {
     const res = await fetch('/api/system')
     const data = await res.json()
@@ -319,13 +340,12 @@ const loadAgents = async () => {
   }
 }
 
-const loadHistory = async () => {
+const loadHistory = async (): Promise<void> => {
   try {
     const agentId = selectedAgentId.value || 'null'
     const res = await fetch(`/api/agent/${agentId}/history`)
     const data = await res.json()
     
-    // Reset messages to just the system welcome message
     messages.value = [
       { role: 'system', agent: 'System', content: 'Welcome to Midou Multi-Agent Chat!' }
     ]
@@ -342,31 +362,32 @@ watch(selectedAgentId, () => {
   loadHistory()
 })
 
-const renderMarkdown = (text) => {
+const renderMarkdown = (text: string): string => {
   let processedText = text || ''
   processedText = processedText.replace(/<think>/g, '<details><summary>💭 Thinking...</summary>\n\n')
   processedText = processedText.replace(/<\/think>/g, '\n\n</details>\n\n')
-  return marked(processedText)
+  return marked(processedText) as string
 }
 
-const sendMessage = () => {
+const sendMessage = (): void => {
   if (!inputMessage.value.trim() || isBusy.value) return
   
-  const msg = {
+  const msg: ChatMsg = {
     role: 'user',
+    agent: 'You',
     content: inputMessage.value,
     targetAgentId: selectedAgentId.value || null
   }
   
   messages.value.push(msg)
-  socket.emit('message', msg)
+  socket?.emit('message', msg)
   inputMessage.value = ''
-  isUserScrolling = false // Reset scrolling state when user sends a message
+  isUserScrolling = false
   scrollToBottom()
 }
 
-const interruptAgent = () => {
+const interruptAgent = (): void => {
   if (!isBusy.value) return
-  socket.emit('interrupt', { targetAgentId: selectedAgentId.value || null })
+  socket?.emit('interrupt', { targetAgentId: selectedAgentId.value || null })
 }
 </script>

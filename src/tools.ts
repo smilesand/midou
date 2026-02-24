@@ -8,15 +8,26 @@ import { exec } from 'child_process';
 import { isMCPTool, executeMCPTool } from './mcp.js';
 import { listSkillNames, loadSkillContent } from './skills.js';
 import { addMemory, searchMemory } from './rag/index.js';
-import { addTodoItem, updateTodoStatus, getTodoItems, clearTodoItems } from './todo.js';
+import {
+  addTodoItem,
+  updateTodoStatus,
+  getTodoItems,
+  clearTodoItems,
+} from './todo.js';
 import dayjs from 'dayjs';
-import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
+import { MIDOU_WORKSPACE_DIR } from './config.js';
+import type {
+  ToolDefinition,
+  ToolHandler,
+  SystemManagerInterface,
+} from './types.js';
 
-export const dynamicToolHandlers = new Map();
+export const dynamicToolHandlers = new Map<string, ToolHandler>();
 
-export function registerTool(definition, handler) {
-  // Check if tool already exists to prevent duplicates on reload
-  const existingIndex = toolDefinitions.findIndex(t => t.function.name === definition.function.name);
+export function registerTool(definition: ToolDefinition, handler: ToolHandler): void {
+  const existingIndex = toolDefinitions.findIndex(
+    (t) => t.function.name === definition.function.name
+  );
   if (existingIndex >= 0) {
     toolDefinitions[existingIndex] = definition;
   } else {
@@ -28,7 +39,7 @@ export function registerTool(definition, handler) {
 /**
  * 工具定义（OpenAI Function Calling 格式）
  */
-export let toolDefinitions = [
+export let toolDefinitions: ToolDefinition[] = [
   // ── 任务控制 ──────────────────────────────────
   {
     type: 'function',
@@ -47,12 +58,31 @@ export let toolDefinitions = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description:
+        '向用户提出问题，等待用户回复。当你需要用户的输入或确认时使用此工具。',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: '要问用户的问题',
+          },
+        },
+        required: ['question'],
+      },
+    },
+  },
   // ── 记忆与日志 ──────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'search_memory',
-      description: '使用 RAG (Retrieval-Augmented Generation) 搜索长期记忆，获取历史对话中总结的重要事实、用户偏好或未完成的任务。',
+      description:
+        '使用 RAG (Retrieval-Augmented Generation) 搜索长期记忆，获取历史对话中总结的重要事实、用户偏好或未完成的任务。',
       parameters: {
         type: 'object',
         properties: {
@@ -88,8 +118,9 @@ export let toolDefinitions = [
           type: {
             type: 'string',
             enum: ['semantic', 'episodic'],
-            description: '记忆类型：semantic(语义/事实/规则) 或 episodic(情景/事件/日志)，默认 semantic'
-          }
+            description:
+              '记忆类型：semantic(语义/事实/规则) 或 episodic(情景/事件/日志)，默认 semantic',
+          },
         },
         required: ['content'],
       },
@@ -109,7 +140,8 @@ export let toolDefinitions = [
           },
           days_ago: {
             type: 'number',
-            description: '读取几天前的日志（0 表示今天，1 表示昨天，以此类推）',
+            description:
+              '读取几天前的日志（0 表示今天，1 表示昨天，以此类推）',
           },
         },
         required: ['agent_name', 'days_ago'],
@@ -122,7 +154,8 @@ export let toolDefinitions = [
     type: 'function',
     function: {
       name: 'read_organization_roster',
-      description: '读取组织花名册，了解组织里有哪些 Agent，以及他们各自的角色和能力。',
+      description:
+        '读取组织花名册，了解组织里有哪些 Agent，以及他们各自的角色和能力。',
       parameters: {
         type: 'object',
         properties: {},
@@ -156,7 +189,8 @@ export let toolDefinitions = [
     type: 'function',
     function: {
       name: 'create_agent',
-      description: '如果你的工作复杂，你可以创建一个智能体来帮你完成特定任务。智能体会自动执行任务并汇报结果。',
+      description:
+        '如果你的工作复杂，你可以创建一个智能体来帮你完成特定任务。智能体会自动执行任务并汇报结果。',
       parameters: {
         type: 'object',
         properties: {
@@ -317,7 +351,8 @@ export let toolDefinitions = [
           },
           agent_id: {
             type: 'string',
-            description: '指派对象的 Agent ID 或名称均可（可选，默认指派给自己）',
+            description:
+              '指派对象的 Agent ID 或名称均可（可选，默认指派给自己）',
           },
         },
         required: ['title'],
@@ -366,9 +401,14 @@ export let toolDefinitions = [
 /**
  * 执行工具调用
  */
-export async function executeTool(name, args, systemManager, agentId) {
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  systemManager: SystemManagerInterface | null,
+  agentId: string
+): Promise<string> {
   if (dynamicToolHandlers.has(name)) {
-    const handler = dynamicToolHandlers.get(name);
+    const handler = dynamicToolHandlers.get(name)!;
     return await handler(args, { systemManager, agentId });
   }
 
@@ -380,36 +420,60 @@ export async function executeTool(name, args, systemManager, agentId) {
     // ── 任务控制 ──
     case 'finish_task':
       return `任务已完成: ${args.summary}`;
+
+    case 'ask_user':
+      return `[等待用户回复] ${args.question}`;
+
     // ── 记忆与日志 ──
     case 'search_memory': {
       try {
-        const results = await searchMemory(agentId, args.query, args.limit || 5);
-        if (!results || results.length === 0) return `未找到与 "${args.query}" 相关的记忆。`;
-        
-        return results.map((r, i) => {
-          const weight = (r.attentionWeight * 100).toFixed(1) + '%';
-          const rel = r.metrics.isRelational ? ' [关联推理]' : '';
-          return `[记忆 ${i+1}] (注意力权重: ${weight}${rel} | 类型: ${r.type}):\n${r.content}`;
-        }).join('\n\n');
-      } catch (e) {
-        return `搜索记忆失败: ${e.message}`;
+        const results = await searchMemory(
+          agentId,
+          args.query as string,
+          (args.limit as number) || 5
+        );
+        if (!results || results.length === 0)
+          return `未找到与 "${args.query}" 相关的记忆。`;
+
+        return results
+          .map((r, i) => {
+            const weight = (r.attentionWeight * 100).toFixed(1) + '%';
+            const rel = r.metrics.isRelational ? ' [关联推理]' : '';
+            return `[记忆 ${i + 1}] (注意力权重: ${weight}${rel} | 类型: ${r.type}):\n${r.content}`;
+          })
+          .join('\n\n');
+      } catch (e: unknown) {
+        return `搜索记忆失败: ${(e as Error).message}`;
       }
     }
     case 'add_memory': {
       try {
-        const id = await addMemory(agentId, args.content, args.importance || 3, args.type || 'semantic');
-        return `已成功将内容存入 Transformer 记忆库 (ID: ${id}, 类型: ${args.type || 'semantic'})。`;
-      } catch (e) {
-        return `添加记忆失败: ${e.message}`;
+        const id = await addMemory(
+          agentId,
+          args.content as string,
+          (args.importance as number) || 3,
+          (args.type as string) || 'semantic'
+        );
+        return `已成功将内容存入 Transformer 记忆库 (ID: ${id}, 类型: ${(args.type as string) || 'semantic'})。`;
+      } catch (e: unknown) {
+        return `添加记忆失败: ${(e as Error).message}`;
       }
     }
     case 'read_agent_log': {
-      const date = dayjs().subtract(args.days_ago, 'day').format('YYYY-MM-DD');
+      const date = dayjs()
+        .subtract(args.days_ago as number, 'day')
+        .format('YYYY-MM-DD');
       const logPath = `agents/${args.agent_name}/memory/${date}.md`;
       try {
-        const content = await fs.readFile(path.join(MIDOU_WORKSPACE_DIR, logPath), 'utf-8');
-        return content || `Agent ${args.agent_name} 在 ${date} 没有日志记录。`;
-      } catch (e) {
+        const content = await fs.readFile(
+          path.join(MIDOU_WORKSPACE_DIR, logPath),
+          'utf-8'
+        );
+        return (
+          content ||
+          `Agent ${args.agent_name} 在 ${date} 没有日志记录。`
+        );
+      } catch (_e) {
         return `无法读取 Agent ${args.agent_name} 在 ${date} 的日志。`;
       }
     }
@@ -423,16 +487,21 @@ export async function executeTool(name, args, systemManager, agentId) {
 
     case 'send_message':
       if (systemManager) {
-        return await systemManager.sendMessage(agentId, args.target_agent_id, args.message, args.context);
+        return await systemManager.sendMessage(
+          agentId,
+          args.target_agent_id as string,
+          args.message as string,
+          (args.context as Record<string, unknown>) || {}
+        );
       }
       return '消息总线功能尚未完全实现。';
 
     case 'create_agent':
       if (systemManager) {
         return await systemManager.createChildAgent(agentId, {
-          name: args.name,
-          systemPrompt: args.system_prompt,
-          task: args.task
+          name: args.name as string | undefined,
+          systemPrompt: args.system_prompt as string | undefined,
+          task: args.task as string,
         });
       }
       return '子 Agent 创建功能尚未实现。';
@@ -444,20 +513,20 @@ export async function executeTool(name, args, systemManager, agentId) {
       return skills.join('\n');
     }
     case 'load_skill': {
-      const content = await loadSkillContent(args.skill_name);
+      const content = await loadSkillContent(args.skill_name as string);
       return content || `未找到技能: ${args.skill_name}`;
     }
 
     // ── 系统级工具 ──
     case 'run_command': {
-      const safeCheck = isSafeCommand(args.command);
+      const safeCheck = isSafeCommand(args.command as string);
       if (safeCheck === 'SUDO_BLOCKED') {
         return '⚠️ 该命令需要管理员权限。出于安全考虑，绝对禁止向用户索要密码。请直接将需要执行的命令输出给用户，让用户自己在一个安全的终端中手动执行。';
       } else if (!safeCheck) {
         return '⚠️ 该命令被安全策略拦截。如果确实需要执行，请通知用户手动操作。';
       }
 
-      let cwd = args.cwd;
+      let cwd = args.cwd as string | undefined;
       if (!cwd && systemManager && agentId) {
         const agent = systemManager.agents.get(agentId);
         if (agent) {
@@ -465,15 +534,15 @@ export async function executeTool(name, args, systemManager, agentId) {
         }
       }
 
-      const result = await runShellCommand(args.command, {
-        cwd: cwd,
-        timeout: args.timeout,
+      const result = await runShellCommand(args.command as string, {
+        cwd,
+        timeout: args.timeout as number | undefined,
       });
       let output = '';
       if (result.stdout) output += result.stdout;
-      if (result.stderr) output += (output ? '\n' : '') + `[stderr] ${result.stderr}`;
+      if (result.stderr)
+        output += (output ? '\n' : '') + `[stderr] ${result.stderr}`;
       output += `\n[exit code: ${result.exitCode}]`;
-      // 截断过长的输出
       if (output.length > 8000) {
         output = output.slice(0, 8000) + '\n... [输出已截断]';
       }
@@ -482,86 +551,127 @@ export async function executeTool(name, args, systemManager, agentId) {
 
     case 'read_system_file': {
       try {
-        const encoding = args.encoding || 'utf-8';
-        const content = await fs.readFile(args.path, encoding);
-        // 截断过长内容
+        const encoding = (args.encoding as BufferEncoding) || 'utf-8';
+        const content = await fs.readFile(args.path as string, encoding);
         if (content.length > 10000) {
-          return content.slice(0, 10000) + '\n... [内容已截断，共 ' + content.length + ' 字符]';
+          return (
+            content.slice(0, 10000) +
+            '\n... [内容已截断，共 ' +
+            content.length +
+            ' 字符]'
+          );
         }
         return content;
-      } catch (err) {
-        return `无法读取文件 ${args.path}: ${err.message}`;
+      } catch (err: unknown) {
+        return `无法读取文件 ${args.path}: ${(err as Error).message}`;
       }
     }
 
     case 'write_system_file': {
       try {
-        await fs.mkdir(path.dirname(args.path), { recursive: true });
-        await fs.writeFile(args.path, args.content, 'utf-8');
+        await fs.mkdir(path.dirname(args.path as string), { recursive: true });
+        await fs.writeFile(args.path as string, args.content as string, 'utf-8');
         return `已写入 ${args.path}`;
-      } catch (err) {
-        return `无法写入文件 ${args.path}: ${err.message}`;
+      } catch (err: unknown) {
+        return `无法写入文件 ${args.path}: ${(err as Error).message}`;
       }
     }
 
     case 'list_system_dir': {
       try {
-        const entries = await fs.readdir(args.path, { withFileTypes: true });
-        const lines = entries.map(e => {
+        const entries = await fs.readdir(args.path as string, {
+          withFileTypes: true,
+        });
+        const lines = entries.map((e) => {
           const type = e.isDirectory() ? '📁' : '📄';
           return `${type} ${e.name}`;
         });
 
         if (args.details) {
-          const detailed = [];
+          const detailed: string[] = [];
           for (const e of entries) {
             try {
-              const stat = await fs.stat(path.join(args.path, e.name));
+              const stat = await fs.stat(
+                path.join(args.path as string, e.name)
+              );
               const type = e.isDirectory() ? '📁' : '📄';
-              const size = e.isDirectory() ? '-' : formatSize(stat.size);
-              const mtime = stat.mtime.toISOString().slice(0, 16).replace('T', ' ');
-              detailed.push(`${type} ${e.name.padEnd(30)} ${size.padStart(10)}  ${mtime}`);
+              const size = e.isDirectory()
+                ? '-'
+                : formatSize(stat.size);
+              const mtime = stat.mtime
+                .toISOString()
+                .slice(0, 16)
+                .replace('T', ' ');
+              detailed.push(
+                `${type} ${e.name.padEnd(30)} ${size.padStart(10)}  ${mtime}`
+              );
             } catch {
-              detailed.push(`${e.isDirectory() ? '📁' : '📄'} ${e.name}`);
+              detailed.push(
+                `${e.isDirectory() ? '📁' : '📄'} ${e.name}`
+              );
             }
           }
           return detailed.join('\n') || '（空目录）';
         }
 
         return lines.join('\n') || '（空目录）';
-      } catch (err) {
-        return `无法列出目录 ${args.path}: ${err.message}`;
+      } catch (err: unknown) {
+        return `无法列出目录 ${args.path}: ${(err as Error).message}`;
       }
     }
 
     // ── TODO 工作流 ──
     case 'create_todo': {
-      let targetAgentId = args.agent_id || agentId;
-      // 容错：如果传入的是名称而非 ID，尝试解析为 ID
-      if (systemManager && systemManager.agents && !systemManager.agents.has(targetAgentId)) {
-        const matchedAgent = Array.from(systemManager.agents.values()).find(a => a.name === targetAgentId);
+      let targetAgentId = (args.agent_id as string) || agentId;
+      if (
+        systemManager &&
+        systemManager.agents &&
+        !systemManager.agents.has(targetAgentId)
+      ) {
+        const matchedAgent = Array.from(
+          systemManager.agents.values()
+        ).find((a) => a.name === targetAgentId);
         if (matchedAgent) targetAgentId = matchedAgent.id;
       }
-      const item = await addTodoItem(targetAgentId, args.title, args.description || '');
+      const item = await addTodoItem(
+        targetAgentId,
+        args.title as string,
+        (args.description as string) || ''
+      );
       return `已创建任务 [${item.id}]: ${item.title} (指派给: ${targetAgentId})`;
     }
-    
+
     case 'update_todo': {
-      const updates = {};
-      if (args.status) updates.status = args.status;
-      if (args.notes) updates.notes = args.notes;
-      
-      const item = await updateTodoStatus(args.id, updates);
+      const updates: Record<string, string> = {};
+      if (args.status) updates.status = args.status as string;
+      if (args.notes) updates.notes = args.notes as string;
+
+      const item = await updateTodoStatus(args.id as string, updates);
       if (!item) return `未找到任务 [${args.id}]`;
-      const statusMap = { pending: '待办', in_progress: '进行中', done: '✓ 完成', blocked: '阻塞' };
+      const statusMap: Record<string, string> = {
+        pending: '待办',
+        in_progress: '进行中',
+        done: '✓ 完成',
+        blocked: '阻塞',
+      };
       return `任务 [${item.id}] "${item.title}" 已更新。当前状态: ${statusMap[item.status] || item.status}`;
     }
 
     case 'list_todos': {
       const items = await getTodoItems(agentId);
       if (items.length === 0) return '当前没有工作任务';
-      const statusIcon = { pending: '□', in_progress: '►', done: '✓', blocked: '✗' };
-      return items.map(i => `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}${i.notes ? ' (备注: ' + i.notes + ')' : ''}`).join('\n');
+      const statusIcon: Record<string, string> = {
+        pending: '□',
+        in_progress: '►',
+        done: '✓',
+        blocked: '✗',
+      };
+      return items
+        .map(
+          (i) =>
+            `[${i.id}] ${statusIcon[i.status] || '?'} ${i.title}${i.description ? ' — ' + i.description : ''}${i.notes ? ' (备注: ' + i.notes + ')' : ''}`
+        )
+        .join('\n');
     }
 
     default:
@@ -569,20 +679,15 @@ export async function executeTool(name, args, systemManager, agentId) {
   }
 }
 
-/**
- * 格式化文件大小
- */
-function formatSize(bytes) {
+function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + 'B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'K';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + 'M';
+  if (bytes < 1024 * 1024 * 1024)
+    return (bytes / 1024 / 1024).toFixed(1) + 'M';
   return (bytes / 1024 / 1024 / 1024).toFixed(1) + 'G';
 }
 
-/**
- * 检查命令是否安全
- */
-function isSafeCommand(command) {
+function isSafeCommand(command: string): boolean | string {
   const dangerous = ['rm -rf /', 'mkfs', 'dd if=', '> /dev/sda'];
   for (const d of dangerous) {
     if (command.includes(d)) return false;
@@ -593,19 +698,30 @@ function isSafeCommand(command) {
   return true;
 }
 
-/**
- * 执行 shell 命令
- */
-function runShellCommand(command, options = {}) {
+interface ShellResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  error: string | null;
+}
+
+function runShellCommand(
+  command: string,
+  options: { cwd?: string; timeout?: number } = {}
+): Promise<ShellResult> {
   return new Promise((resolve) => {
     const timeout = options.timeout || 10000;
-    const child = exec(command, { cwd: options.cwd, timeout }, (error, stdout, stderr) => {
-      resolve({
-        stdout: stdout || '',
-        stderr: stderr || '',
-        exitCode: error ? error.code : 0,
-        error: error ? error.message : null,
-      });
-    });
+    exec(
+      command,
+      { cwd: options.cwd, timeout },
+      (error, stdout, stderr) => {
+        resolve({
+          stdout: stdout || '',
+          stderr: stderr || '',
+          exitCode: error ? (error as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0,
+          error: error ? error.message : null,
+        });
+      }
+    );
   });
 }

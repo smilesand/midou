@@ -1,17 +1,16 @@
 /**
  * Unit Tests for core modules
- * 
+ *
  * Tests tool definitions, TODO module, config loading,
  * and other pure logic that doesn't require LLM calls.
- * 
- * Usage: node --test test/test-unit.js
+ *
+ * Usage: npx tsx --test test/test-unit.ts
  */
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, '..');
@@ -19,7 +18,7 @@ const projectRoot = path.join(__dirname, '..');
 // ---- Config ----
 describe('Config', () => {
   it('should export MIDOU_PKG and MIDOU_WORKSPACE_DIR', async () => {
-    const config = await import('../midou.config.js');
+    const config = await import('../src/config.js');
     assert.ok(config.MIDOU_PKG, 'MIDOU_PKG should be set');
     assert.ok(config.MIDOU_WORKSPACE_DIR, 'MIDOU_WORKSPACE_DIR should be set');
     assert.ok(config.default, 'Default config export should exist');
@@ -28,14 +27,17 @@ describe('Config', () => {
   });
 
   it('MIDOU_PKG should point to project root', async () => {
-    const config = await import('../midou.config.js');
+    const config = await import('../src/config.js');
     assert.equal(config.MIDOU_PKG, projectRoot);
   });
 });
 
 // ---- Tools ----
 describe('Tool Definitions', () => {
-  let toolDefinitions;
+  let toolDefinitions: Array<{
+    type: string;
+    function: { name: string; description: string; parameters: unknown };
+  }>;
 
   before(async () => {
     const toolsModule = await import('../src/tools.js');
@@ -43,7 +45,10 @@ describe('Tool Definitions', () => {
   });
 
   it('should export toolDefinitions array', () => {
-    assert.ok(Array.isArray(toolDefinitions), 'toolDefinitions should be an array');
+    assert.ok(
+      Array.isArray(toolDefinitions),
+      'toolDefinitions should be an array'
+    );
     assert.ok(toolDefinitions.length > 0, 'Should have at least one tool');
   });
 
@@ -58,14 +63,14 @@ describe('Tool Definitions', () => {
   });
 
   it('should include task control tools', () => {
-    const names = toolDefinitions.map(t => t.function.name);
+    const names = toolDefinitions.map((t) => t.function.name);
     assert.ok(names.includes('finish_task'), 'Should have finish_task');
     assert.ok(names.includes('ask_user'), 'Should have ask_user');
   });
 
   it('should include all core tools', () => {
-    const names = toolDefinitions.map(t => t.function.name);
-    
+    const names = toolDefinitions.map((t) => t.function.name);
+
     const expectedTools = [
       'search_memory',
       'add_memory',
@@ -78,7 +83,7 @@ describe('Tool Definitions', () => {
       'list_skills',
       'load_skill',
       'update_todo',
-      'list_todos'
+      'list_todos',
     ];
 
     for (const name of expectedTools) {
@@ -95,17 +100,20 @@ describe('Tool Definitions', () => {
 
 // ---- TODO Module ----
 describe('TODO Module', () => {
-  let todoModule;
-  const testTodoIds = [];
+  let todoModule: typeof import('../src/todo.js');
+  const testTodoIds: string[] = [];
 
   before(async () => {
     todoModule = await import('../src/todo.js');
   });
 
   after(async () => {
-    // Clean up test todos
     for (const id of testTodoIds) {
-      try { await todoModule.deleteTodoItem(id); } catch (e) {}
+      try {
+        await todoModule.deleteTodoItem(id);
+      } catch (_e) {
+        // ignore
+      }
     }
   });
 
@@ -115,7 +123,11 @@ describe('TODO Module', () => {
   });
 
   it('should add a todo item', async () => {
-    const todo = await todoModule.addTodoItem('test-agent', 'Test Task', 'A test description');
+    const todo = await todoModule.addTodoItem(
+      'test-agent',
+      'Test Task',
+      'A test description'
+    );
     assert.ok(todo.id);
     assert.equal(todo.title, 'Test Task');
     assert.equal(todo.description, 'A test description');
@@ -125,38 +137,53 @@ describe('TODO Module', () => {
   });
 
   it('should update todo status', async () => {
-    const todo = await todoModule.addTodoItem('test-agent', 'Update Test', '');
+    const todo = await todoModule.addTodoItem(
+      'test-agent',
+      'Update Test',
+      ''
+    );
     testTodoIds.push(todo.id);
 
     const updated = await todoModule.updateTodoStatus(todo.id, {
       status: 'in_progress',
-      notes: 'Working on it'
+      notes: 'Working on it',
     });
     assert.ok(updated);
-    assert.equal(updated.status, 'in_progress');
-    assert.equal(updated.notes, 'Working on it');
+    assert.equal(updated!.status, 'in_progress');
+    assert.equal(updated!.notes, 'Working on it');
   });
 
   it('should filter todos by agentId', async () => {
-    await todoModule.addTodoItem('filter-agent', 'Filter Test', '').then(t => testTodoIds.push(t.id));
-    
+    const t = await todoModule.addTodoItem('filter-agent', 'Filter Test', '');
+    testTodoIds.push(t.id);
+
     const filtered = await todoModule.getTodoItems('filter-agent');
     assert.ok(filtered.length > 0);
-    assert.ok(filtered.every(t => t.agentId === 'filter-agent'));
+    assert.ok(filtered.every((t) => t.agentId === 'filter-agent'));
   });
 
   it('should delete a todo item', async () => {
-    const todo = await todoModule.addTodoItem('test-agent', 'Delete Me', '');
-    
+    const todo = await todoModule.addTodoItem(
+      'test-agent',
+      'Delete Me',
+      ''
+    );
+
     const deleted = await todoModule.deleteTodoItem(todo.id);
     assert.equal(deleted, true);
 
     const deletedAgain = await todoModule.deleteTodoItem(todo.id);
-    assert.equal(deletedAgain, false, 'Deleting non-existent todo should return false');
+    assert.equal(
+      deletedAgain,
+      false,
+      'Deleting non-existent todo should return false'
+    );
   });
 
   it('should return null when updating non-existent todo', async () => {
-    const result = await todoModule.updateTodoStatus('non-existent-id', { status: 'done' });
+    const result = await todoModule.updateTodoStatus('non-existent-id', {
+      status: 'done',
+    });
     assert.equal(result, null);
   });
 });
@@ -165,8 +192,7 @@ describe('TODO Module', () => {
 describe('Agent Class', () => {
   it('should handle both data and config keys', async () => {
     const agentModule = await import('../src/agent.js');
-    
-    // Mock a minimal systemManager
+
     const mockSystemManager = {
       getOrganizationRoster: () => null,
       buildOutputHandler: null,
@@ -174,28 +200,37 @@ describe('Agent Class', () => {
     };
 
     // Test with 'data' key
-    const agent1 = new agentModule.Agent({
-      id: 'test1',
-      name: 'Test1',
-      data: { provider: 'openai', model: 'gpt-4o' }
-    }, mockSystemManager);
+    const agent1 = new agentModule.Agent(
+      {
+        id: 'test1',
+        name: 'Test1',
+        data: { provider: 'openai', model: 'gpt-4o' },
+      },
+      mockSystemManager as never
+    );
     assert.equal(agent1.config.provider, 'openai');
     assert.equal(agent1.config.model, 'gpt-4o');
 
     // Test with 'config' key (backward compat)
-    const agent2 = new agentModule.Agent({
-      id: 'test2',
-      name: 'Test2',
-      config: { provider: 'anthropic', model: 'claude-sonnet' }
-    }, mockSystemManager);
+    const agent2 = new agentModule.Agent(
+      {
+        id: 'test2',
+        name: 'Test2',
+        config: { provider: 'anthropic', model: 'claude-sonnet' },
+      },
+      mockSystemManager as never
+    );
     assert.equal(agent2.config.provider, 'anthropic');
     assert.equal(agent2.config.model, 'claude-sonnet');
 
     // Test with neither key
-    const agent3 = new agentModule.Agent({
-      id: 'test3',
-      name: 'Test3'
-    }, mockSystemManager);
+    const agent3 = new agentModule.Agent(
+      {
+        id: 'test3',
+        name: 'Test3',
+      },
+      mockSystemManager as never
+    );
     assert.deepEqual(agent3.config, {});
   });
 });

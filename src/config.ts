@@ -1,21 +1,23 @@
-// midou.config.js — midou 的全局配置
+// src/config.ts — midou 的全局配置
 
 import { fileURLToPath } from 'url';
 import path from 'path';
 import os from 'os';
 import dotenv from 'dotenv';
+import type { MidouAppConfig } from './types.js';
 
 // MIDOU_PKG — npm 包的安装位置（代码 / 身体）
 const __filename = fileURLToPath(import.meta.url);
-export const MIDOU_PKG = path.dirname(__filename);
+export const MIDOU_PKG = path.dirname(path.dirname(__filename));
 
 // MIDOU_WORKSPACE_DIR — 组织总部（公共资产 / 全局配置）
-export const MIDOU_WORKSPACE_DIR = process.env.MIDOU_WORKSPACE_DIR || path.join(os.homedir(), '.midou');
+export const MIDOU_WORKSPACE_DIR: string =
+  process.env.MIDOU_WORKSPACE_DIR || path.join(os.homedir(), '.midou');
 
 // 加载全局 .env
 dotenv.config({ path: path.join(MIDOU_WORKSPACE_DIR, '.env') });
 
-export default {
+const config: MidouAppConfig = {
   // AI 模型配置
   llm: {
     provider: process.env.MIDOU_PROVIDER || 'anthropic',
@@ -24,13 +26,14 @@ export default {
     maxTokens: 4096,
 
     anthropic: {
-      baseURL: process.env.MIDOU_API_BASE || 'https://api.minimaxi.com/anthropic',
-      apiKey:  process.env.MIDOU_API_KEY  || '',
+      baseURL:
+        process.env.MIDOU_API_BASE || 'https://api.minimaxi.com/anthropic',
+      apiKey: process.env.MIDOU_API_KEY || '',
     },
 
     openai: {
       baseURL: process.env.MIDOU_API_BASE || 'https://api.openai.com/v1',
-      apiKey:  process.env.MIDOU_API_KEY  || '',
+      apiKey: process.env.MIDOU_API_KEY || '',
     },
   },
 
@@ -43,3 +46,5 @@ export default {
   // 包的安装位置（源码位置）
   pkg: MIDOU_PKG,
 };
+
+export default config;

@@ -5,28 +5,37 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { MIDOU_WORKSPACE_DIR } from '../midou.config.js';
+import { MIDOU_WORKSPACE_DIR } from './config.js';
+
+interface Skill {
+  name: string;
+  description: string;
+  path: string;
+  source: string;
+}
 
 // 技能搜索路径
-const SKILL_SEARCH_PATHS = [
+const SKILL_SEARCH_PATHS: string[] = [
   path.join(os.homedir(), '.claude', 'skills'),
   path.join(os.homedir(), '.agents', 'skills'),
   path.join(MIDOU_WORKSPACE_DIR, 'skills'),
 ];
 
-let skillsCache = null;
+let skillsCache: Skill[] | null = null;
 
-export async function discoverSkills() {
+export async function discoverSkills(): Promise<Skill[]> {
   if (skillsCache) return skillsCache;
 
-  const skills = [];
+  const skills: Skill[] = [];
 
   for (const searchPath of SKILL_SEARCH_PATHS) {
     try {
       const entries = await fs.readdir(searchPath, { withFileTypes: true });
-      const source = searchPath.includes('.claude') ? 'claude'
-        : searchPath.includes('.agents') ? 'agents'
-        : 'midou';
+      const source = searchPath.includes('.claude')
+        ? 'claude'
+        : searchPath.includes('.agents')
+          ? 'agents'
+          : 'midou';
 
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -56,7 +65,7 @@ export async function discoverSkills() {
   return skills;
 }
 
-function extractDescription(content) {
+function extractDescription(content: string): string {
   const descMatch = content.match(/<description>([\s\S]*?)<\/description>/);
   if (descMatch) return descMatch[1].trim();
 
@@ -66,7 +75,12 @@ function extractDescription(content) {
   const lines = content.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('<') && !trimmed.startsWith('---')) {
+    if (
+      trimmed &&
+      !trimmed.startsWith('#') &&
+      !trimmed.startsWith('<') &&
+      !trimmed.startsWith('---')
+    ) {
       return trimmed.slice(0, 200);
     }
   }
@@ -74,9 +88,11 @@ function extractDescription(content) {
   return '（无描述）';
 }
 
-export async function loadSkillContent(skillName) {
+export async function loadSkillContent(
+  skillName: string
+): Promise<string | null> {
   const skills = await discoverSkills();
-  const skill = skills.find(s => s.name === skillName);
+  const skill = skills.find((s) => s.name === skillName);
   if (!skill) return null;
 
   try {
@@ -86,11 +102,13 @@ export async function loadSkillContent(skillName) {
   }
 }
 
-export async function buildSkillsPrompt() {
+export async function buildSkillsPrompt(): Promise<string> {
   const skills = await discoverSkills();
   if (skills.length === 0) return '';
 
-  const lines = ['你拥有以下技能，可以在需要时使用 `load_skill` 工具加载详细指令：\n'];
+  const lines = [
+    '你拥有以下技能，可以在需要时使用 `load_skill` 工具加载详细指令：\n',
+  ];
   for (const skill of skills) {
     lines.push(`- **${skill.name}** (${skill.source}): ${skill.description}`);
   }
@@ -98,11 +116,11 @@ export async function buildSkillsPrompt() {
   return lines.join('\n');
 }
 
-export function clearSkillsCache() {
+export function clearSkillsCache(): void {
   skillsCache = null;
 }
 
-export async function listSkillNames() {
+export async function listSkillNames(): Promise<string[]> {
   const skills = await discoverSkills();
-  return skills.map(s => `${s.name} (${s.source}): ${s.description}`);
+  return skills.map((s) => `${s.name} (${s.source}): ${s.description}`);
 }
