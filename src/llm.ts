@@ -146,16 +146,29 @@ async function* streamAnthropic(
     baseURL: llmConfig.baseURL || config.llm.apiBase || undefined,
   });
 
+  // 使用 cache_control 缓存系统提示，减少重复 token 消耗
   const requestParams: Anthropic.Messages.MessageCreateParamsStreaming = {
     model: llmConfig.model || config.llm.model,
     max_tokens: maxTokens,
-    system: systemPrompt,
+    system: [
+      {
+        type: 'text' as const,
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' as const },
+      },
+    ],
     messages: toAnthropicMessages(messages),
     stream: true,
   };
 
   if (tools.length > 0) {
-    requestParams.tools = toAnthropicTools(tools);
+    const anthropicTools = toAnthropicTools(tools);
+    // 给最后一个工具加 cache_control，使整个工具定义列表被缓存
+    if (anthropicTools.length > 0) {
+      (anthropicTools[anthropicTools.length - 1] as unknown as Record<string, unknown>).cache_control =
+        { type: 'ephemeral' };
+    }
+    requestParams.tools = anthropicTools;
   }
 
   const stream = client.messages.stream(requestParams, { signal });
@@ -403,6 +416,43 @@ export async function quickAsk(
     });
     return response.choices[0]?.message?.content || '';
   }
+}
+
+// ── LLM 包装器（供插件使用） ──
+
+export interface LLMWrapper {
+  /** 简单一问一答 */
+  quickAsk: (prompt: string, systemPrompt?: string) => Promise<string>;
+  /** 流式对话 */
+  streamChat: (
+    systemPrompt: string,
+    messages: ChatMessage[],
+    tools?: ToolDefinition[],
+    maxTokens?: number,
+  ) => AsyncGenerator<StreamChunk>;
+  /** 提供者名称 */
+  provider: string;
+  /** 模型名称 */
+  model: string;
+}
+
+/**
+ * 创建 LLM 包装器实例（供插件通过 PluginContext.createLLM 使用）
+ */
+export function createLLMWrapper(options?: LLMConfig): LLMWrapper {
+  const cfg = options || {};
+  return {
+    quickAsk: (prompt: string, systemPrompt?: string) =>
+      quickAsk(prompt, systemPrompt, cfg),
+    streamChat: (
+      systemPrompt: string,
+      messages: ChatMessage[],
+      tools?: ToolDefinition[],
+      maxTokens?: number,
+    ) => streamChat(cfg, systemPrompt, messages, tools || [], maxTokens),
+    provider: cfg.provider || config.llm.provider,
+    model: cfg.model || config.llm.model,
+  };
 }
 
 // ── 兼容性导出 ──

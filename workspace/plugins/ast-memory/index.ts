@@ -117,15 +117,17 @@ class ASTMemoryEngine {
   async init(): Promise<void> {
     await fs.mkdir(this.storeDir, { recursive: true });
 
-    // 检测是否可用 NodeLLM embed
+    // 检测是否有 embed 能力
     try {
       const llm = _createLLM() as Record<string, unknown>;
       if (typeof llm.embed === 'function') {
         this.useNodeLLMEmbed = true;
-        console.log('[AST-Memory] 使用 NodeLLM embed 作为向量引擎');
+        console.log('[AST-Memory] 使用 LLM embed 作为向量引擎');
+      } else {
+        console.log('[AST-Memory] LLM 无 embed 能力，使用 TF-IDF 向量后备方案');
       }
     } catch {
-      console.log('[AST-Memory] NodeLLM embed 不可用，使用 TF-IDF 后备方案');
+      console.log('[AST-Memory] LLM 未初始化，使用 TF-IDF 向量后备方案');
     }
   }
 
@@ -459,7 +461,7 @@ class ASTMemoryEngine {
   // ══════════════════════════════════════════════════
 
   /**
-   * 向量嵌入 — 优先使用 NodeLLM embed，后备使用 TF-IDF
+   * 向量嵌入 — 优先使用 LLM embed，后备使用 TF-IDF
    */
   private async _embed(text: string): Promise<number[]> {
     const cacheKey = text.slice(0, 200);

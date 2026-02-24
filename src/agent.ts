@@ -8,6 +8,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { ChatEngine } from './chat.js';
+import { loadHistoryFromJournal } from './memory.js';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
 import type {
   AgentConfig,
@@ -100,6 +101,19 @@ export class Agent implements AgentInterface {
 
     // 设置默认输出处理器
     this.engine.setOutputHandler(createConsoleOutputHandler(this.name));
+
+    // 从日志恢复历史对话（服务重启后可在前端展示）
+    try {
+      const history = await loadHistoryFromJournal(this.name, 30, 1);
+      if (history.length > 0) {
+        for (const msg of history) {
+          this.engine.session.add(msg);
+        }
+        console.log(`[Agent] ${this.name} 已从日志恢复 ${history.length} 条历史消息`);
+      }
+    } catch (err) {
+      console.warn(`[Agent] ${this.name} 恢复历史消息失败:`, err);
+    }
 
     console.log(`[Agent] ${this.name} (${this.id}) 已初始化`);
   }

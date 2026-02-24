@@ -222,12 +222,15 @@ export function createCoreTools(ctx: ToolContext): ToolEntry[] {
       properties: {
         target_agent_id: { type: 'string', description: '目标成员的 ID' },
         message: { type: 'string', description: '要发送的消息内容' },
+        from: { type: 'string', description: '发送者名称（你的名字），让接收方知道消息来自谁' },
       },
-      required: ['target_agent_id', 'message'],
+      required: ['target_agent_id', 'message', 'from'],
     },
     async (args) => {
       if (ctx.systemManager) {
-        return await ctx.systemManager.sendMessage(ctx.agentId, args.target_agent_id as string, args.message as string);
+        const from = (args.from as string) || ctx.agentId;
+        const msgWithSender = `[来自 ${from}]: ${args.message as string}`;
+        return await ctx.systemManager.sendMessage(ctx.agentId, args.target_agent_id as string, msgWithSender);
       }
       return '消息总线功能尚未初始化。';
     },

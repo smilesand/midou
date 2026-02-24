@@ -115,6 +115,7 @@ export class ChatEngine implements ChatEngineInterface {
 
     // 6. 进入工具循环
     let fullResponse = '';
+    let fullThinking = ''; // 累积所有轮次的思维链，用于持久化
     let haltMessage: string | null = null;
     let iteration = 0;
     // 用于追踪当前轮次的消息（历史 + 多轮工具调用消息）
@@ -219,10 +220,19 @@ export class ChatEngine implements ChatEngineInterface {
               this._outputHandler.onToolExec(toolName, toolArgs);
               this._outputHandler.onToolResult();
 
+              // 截断过长的工具结果以节省 token（完整结果已通过 OutputHandler 发送给前端）
+              const MAX_TOOL_RESULT_CONTEXT = 2000;
+              let contextResult = resultStr;
+              if (contextResult.length > MAX_TOOL_RESULT_CONTEXT) {
+                contextResult =
+                  contextResult.slice(0, MAX_TOOL_RESULT_CONTEXT) +
+                  `\n... [已截断，完整结果约 ${resultStr.length} 字符]`;
+              }
+
               // 将工具结果加入消息历史
               conversationMessages.push({
                 role: 'tool',
-                content: resultStr,
+                content: contextResult,
                 tool_call_id: tc.id,
               });
             }
@@ -232,6 +242,11 @@ export class ChatEngine implements ChatEngineInterface {
         // 如果 thinking 还未结束，补发 onThinkingEnd
         if (isThinking) {
           this._outputHandler.onThinkingEnd(iterationThinking);
+        }
+
+        // 累积思维链
+        if (iterationThinking) {
+          fullThinking += (fullThinking ? '\n\n' : '') + iterationThinking;
         }
 
         // 如果没有工具调用，说明模型完成了回答，退出循环
@@ -263,8 +278,11 @@ export class ChatEngine implements ChatEngineInterface {
       }
     }
 
-    // 8. 记录到会话和日记
-    this.session.add('assistant', fullResponse);
+    // 8. 记录到会话和日记（将思维链以 <think> 标记嵌入，前端 renderMarkdown 会转为 <details>）
+    const storedResponse = fullThinking
+      ? `<think>${fullThinking}</think>\n\n${fullResponse}`
+      : fullResponse;
+    this.session.add('assistant', storedResponse);
     try {
       await logConversation(this.agentName, userMessage, fullResponse);
     } catch {

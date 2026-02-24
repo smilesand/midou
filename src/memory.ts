@@ -116,6 +116,65 @@ export async function listJournals(): Promise<string[]> {
   return files.filter((f) => f.endsWith('.md')).sort().reverse();
 }
 
+/**
+ * 从日志文件中解析历史对话消息，用于服务重启后恢复会话
+ *
+ * 解析格式：
+ * ### HH:mm
+ * **用户**: user message
+ * **agentName**: assistant response
+ *
+ * @param agentName Agent 名称（用于定位日志目录）
+ * @param maxMessages 最多返回的消息数量（user+assistant 各算一条）
+ * @param days 回溯天数
+ */
+export async function loadHistoryFromJournal(
+  agentName: string,
+  maxMessages: number = 30,
+  days: number = 1,
+): Promise<ChatMessage[]> {
+  const messages: ChatMessage[] = [];
+
+  // 按日期从近到远读取
+  for (let i = 0; i < days; i++) {
+    const date = dayjs().subtract(i, 'day').format('YYYY-MM-DD');
+    const filePath = `agents/${agentName}/memory/${date}.md`;
+    const content = await readFile(filePath);
+    if (!content) continue;
+
+    // 按 ### 分割为对话块
+    const blocks = content.split(/^###\s+/m).filter(Boolean);
+
+    for (const block of blocks) {
+      // 匹配 **用户**: xxx 和 **agentName**: xxx
+      const userMatch = block.match(/\*\*用户\*\*:\s*([\s\S]*?)(?=\n\n\*\*|$)/);
+      const assistantMatch = block.match(/\*\*[^*]+\*\*:\s*([\s\S]*?)$/);
+
+      if (userMatch && assistantMatch) {
+        const userContent = userMatch[1].trim();
+        const assistantContent = assistantMatch[1].trim();
+
+        // 跳过空消息
+        if (!userContent && !assistantContent) continue;
+
+        if (userContent) {
+          messages.push({ role: 'user', content: userContent });
+        }
+        if (assistantContent) {
+          messages.push({ role: 'assistant', content: assistantContent });
+        }
+      }
+    }
+  }
+
+  // 只保留最近的 N 条
+  if (messages.length > maxMessages) {
+    return messages.slice(-maxMessages);
+  }
+
+  return messages;
+}
+
 // ═══════════════════════════════════════════
 // 文件记忆提供者（默认实现）
 // ═══════════════════════════════════════════
