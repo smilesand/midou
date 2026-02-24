@@ -1,173 +1,119 @@
-import dayjs from 'dayjs';
+/**
+ * Heartbeat — midou 的全局反射引擎
+ *
+ * 定期运行自省逻辑：回顾近期对话、总结记忆、更新灵魂文件。
+ */
+
 import fs from 'fs/promises';
 import path from 'path';
+import { quickAsk } from './llm.js';
+import { getRecentMemories, writeJournal, memoryManager } from './memory.js';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
-import { getRecentMemories, writeJournal } from './memory.js';
-import { addMemory } from './rag/index.js';
-import { getTodoItems } from './todo.js';
-import { LLMClient } from './llm.js';
-import type { SystemManagerInterface, LLMConfig } from './types.js';
 
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const SOUL_FILE = path.join(MIDOU_WORKSPACE_DIR, 'SOUL.md');
+const HEARTBEAT_FILE = path.join(MIDOU_WORKSPACE_DIR, 'HEARTBEAT.md');
 
-function isActiveHour(): boolean {
-  const hour = dayjs().hour();
-  return hour >= 8 && hour < 23;
-}
-
-export async function beat(
-  systemManager: SystemManagerInterface
-): Promise<void> {
-  if (!isActiveHour()) {
-    return;
-  }
+/**
+ * 执行一次心跳反射
+ */
+export async function heartbeat(agentName: string = 'midou'): Promise<string> {
+  console.log(`[Heartbeat] ${agentName} 开始反射...`);
 
   try {
-    console.log(`[Heartbeat] 开始全局反省...`);
-
-    if (!systemManager || systemManager.agents.size === 0) {
-      console.log(`[Heartbeat] 没有配置任何 Agent，跳过反省。`);
-      return;
+    // 1. 获取近期记忆
+    const memories = await getRecentMemories(2, agentName);
+    if (!memories.trim()) {
+      const msg = '近期没有足够的对话记录，跳过此次反射。';
+      console.log(`[Heartbeat] ${msg}`);
+      return msg;
     }
 
-    for (const [agentId, agent] of systemManager.agents.entries()) {
-      console.log(
-        `[Heartbeat] 正在反省 Agent: ${agent.name} (${agentId})`
-      );
-
-      try {
-        const allTodos = await getTodoItems();
-        const todos = allTodos.filter(
-          (t) => t.agentId === agentId || t.agentId === agent.name
-        );
-        const pendingTodos = todos.filter(
-          (t) => t.status === 'pending' || t.status === 'in_progress'
-        );
-        if (pendingTodos.length > 0) {
-          console.log(
-            `[Heartbeat] Agent ${agent.name} 有 ${pendingTodos.length} 个待办任务，触发执行。`
-          );
-          const todoListStr = pendingTodos
-            .map(
-              (t) =>
-                `- [ID: ${t.id}] ${t.title} (状态: ${t.status})\n  描述: ${t.description || '无'}\n  备注: ${t.notes || '无'}`
-            )
-            .join('\n');
-          const prompt = `系统提示：你有以下待办任务需要处理：\n${todoListStr}\n\n请执行这些任务，并在完成后使用 update_todo 工具更新状态和备注。如果任务需要分步执行，请先更新状态为 in_progress。`;
-          agent.talk(prompt);
-        }
-      } catch (err: unknown) {
-        console.error(
-          `[Heartbeat] 检查 Agent ${agent.name} 的 TODO 失败:`,
-          (err as Error).message
-        );
-      }
-
-      const recentMemories = await getRecentMemories(1, agent.name);
-      if (!recentMemories || recentMemories.trim() === '') {
-        console.log(
-          `[Heartbeat] Agent ${agent.name} 今日无新记忆，跳过反省。`
-        );
-        continue;
-      }
-
-      let heartbeatStrategy =
-        '- 回顾今天的对话，提取重要的事实、用户的偏好或未完成的任务。\n- 总结成简短的长期记忆。';
-      try {
-        const strategyPath = path.join(
-          MIDOU_WORKSPACE_DIR,
-          'HEARTBEAT.md'
-        );
-        const content = await fs.readFile(strategyPath, 'utf-8');
-        if (content) heartbeatStrategy = content;
-      } catch (_e) {
-        // 忽略文件不存在
-      }
-
-      const systemPrompt = `你是系统的全局反省引擎。你的任务是阅读最近的对话记录，并根据反省策略提取有价值的信息，转化为长期记忆。保持客观、简洁。`;
-
-      const prompt = `时间: ${dayjs().format('YYYY-MM-DD HH:mm')}
-Agent 名称: ${agent.name}
-反省策略：
-${heartbeatStrategy}
-
-最近的对话记录：
-${recentMemories}
-
-请根据策略进行反省。如果没有值得记录的长期记忆，请回复 "NO_REFLECTION_NEEDED"。如果有，请直接输出需要保存的长期记忆内容。`;
-
-      const llmConfig: LLMConfig = {
-        provider: agent.config.provider || undefined,
-        model: agent.config.model || undefined,
-        apiKey: agent.config.apiKey || undefined,
-        baseURL: agent.config.baseURL || undefined,
-      };
-
-      const llmClient = new LLMClient(llmConfig);
-      const response = await llmClient.chatSync([
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: prompt },
-      ]);
-
-      const responseContent = response?.content || '';
-
-      if (
-        responseContent &&
-        !responseContent.includes('NO_REFLECTION_NEEDED')
-      ) {
-        console.log(
-          `[Heartbeat] Agent ${agent.name} 生成了新的长期记忆。`
-        );
-        await addMemory(
-          agentId,
-          `[Agent: ${agent.name}]\n${responseContent}`,
-          4,
-          'semantic'
-        );
-
-        const time = dayjs().format('HH:mm');
-        await writeJournal(
-          `### ${time} [系统反省]\n\n${responseContent}\n`,
-          agent.name
-        );
-
-        systemManager.emitEvent('system_message', {
-          message: `[系统反省 - ${agent.name}] ${responseContent}`,
-        });
-      } else {
-        console.log(
-          `[Heartbeat] Agent ${agent.name} 无需生成新记忆。`
-        );
-      }
+    // 2. 读取灵魂文件
+    let soul = '';
+    try {
+      soul = await fs.readFile(SOUL_FILE, 'utf-8');
+    } catch {
+      soul = '（暂无灵魂描述）';
     }
-  } catch (error: unknown) {
-    console.error(
-      '[Heartbeat] 反省异常:',
-      (error as Error).message
+
+    // 3. 搜索长期记忆中的关键上下文
+    let longTermContext = '';
+    try {
+      const longTermMemories = await memoryManager.searchMemory(agentName, 'important context preferences', 3);
+      if (longTermMemories.length > 0) {
+        longTermContext = '\n\n## 长期记忆摘要\n' +
+          longTermMemories.map((m) => `- ${m.content}`).join('\n');
+      }
+    } catch {
+      // 长期记忆不可用
+    }
+
+    // 4. LLM 反射
+    const result = await quickAsk(
+      `请回顾以下近期对话记忆，进行自我反思：
+
+## 灵魂描述
+${soul}
+${longTermContext}
+
+## 近期对话
+${memories.slice(0, 4000)}
+
+请完成以下任务：
+1. 总结近期对话的主要主题和进展
+2. 识别用户的偏好或需求模式
+3. 标记未完成的任务或承诺
+4. 提出自我改进的建议
+5. 如果发现重要的用户偏好或事实，用 [记忆] 标记
+
+以简洁的方式输出反思结果。`,
+      '你是一个自省模块，负责帮助 AI 助手回顾和总结其最近的工作，提取有价值的洞察和记忆。'
     );
+
+    // 5. 保存反思结果
+    await writeJournal(`## 💭 自省 (Heartbeat)\n\n${result}`, agentName);
+
+    // 6. 更新 HEARTBEAT.md
+    const heartbeatContent = `# Heartbeat — 最近一次反思\n\n` +
+      `**时间**: ${new Date().toISOString()}\n` +
+      `**Agent**: ${agentName}\n\n` +
+      `${result}\n`;
+    await fs.writeFile(HEARTBEAT_FILE, heartbeatContent, 'utf-8');
+
+    // 7. 提取 [记忆] 标记的内容并存入长期记忆
+    const memoryMatches = result.match(/\[记忆\]\s*(.+)/g);
+    if (memoryMatches) {
+      for (const match of memoryMatches) {
+        const content = match.replace(/\[记忆\]\s*/, '').trim();
+        if (content) {
+          try {
+            await memoryManager.addMemory(agentName, content, 'episodic', 4);
+          } catch {
+            // 记忆添加失败不影响主流程
+          }
+        }
+      }
+    }
+
+    console.log(`[Heartbeat] ${agentName} 反射完成`);
+    return result;
+  } catch (err: unknown) {
+    const msg = `反射失败: ${(err as Error).message}`;
+    console.error(`[Heartbeat] ${msg}`);
+    return msg;
   }
 }
 
-export function startHeartbeat(
-  systemManager: SystemManagerInterface,
-  intervalMinutes: number = 60
-): { stop: () => void } {
-  const intervalMs = intervalMinutes * 60 * 1000;
-
-  heartbeatTimer = setInterval(() => beat(systemManager), intervalMs);
-  console.log(
-    `[Heartbeat] 心跳系统已启动，间隔 ${intervalMinutes} 分钟。`
-  );
-
-  return {
-    stop: stopHeartbeat,
-  };
-}
-
-export function stopHeartbeat(): void {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-    console.log(`[Heartbeat] 心跳系统已停止。`);
+/**
+ * 记忆清理 — 定期清理过旧且不重要的记忆
+ */
+export async function memoryCleanup(): Promise<number> {
+  try {
+    const cleaned = await memoryManager.cleanup(30, 2);
+    console.log(`[Heartbeat] 记忆清理完成，清理了 ${cleaned} 条记忆`);
+    return cleaned;
+  } catch (err) {
+    console.error('[Heartbeat] 记忆清理失败:', err);
+    return 0;
   }
 }

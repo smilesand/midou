@@ -1,370 +1,329 @@
+/**
+ * SystemManager — midou 的组织大脑
+ *
+ * 负责 Agent 生命周期管理、MCP 连接、Cron 任务调度、
+ * 消息总线和插件加载。
+ */
+
 import fs from 'fs/promises';
 import path from 'path';
-import cron, { type ScheduledTask } from 'node-cron';
-import { Agent } from './agent.js';
-import { connectMCPServers, disconnectAll as disconnectMCP } from './mcp.js';
-import { MIDOU_WORKSPACE_DIR } from './config.js';
-import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
-import { initRAG, cleanupMemories } from './rag/index.js';
+import cron from 'node-cron';
 import type { Server as SocketIOServer } from 'socket.io';
+import type { Express } from 'express';
+import { Agent } from './agent.js';
+import { initMemory, memoryManager } from './memory.js';
+import { connectMCPServers, disconnectAll, getMCPToolDefinitions } from './mcp.js';
+import { loadPlugins } from './plugin.js';
+import { MIDOU_WORKSPACE_DIR } from './config.js';
 import type {
   AgentConfig,
-  ConnectionConfig,
-  SystemConfig,
-  OutputHandler,
+  AgentData,
   AgentInterface,
+  ConnectionConfig,
+  OutputHandler,
   SystemManagerInterface,
+  SystemConfig,
 } from './types.js';
 
-type OutputHandlerMiddleware = (
-  agent: AgentInterface,
-  handler: OutputHandler
-) => OutputHandler | void;
+const SYSTEM_CONFIG_FILE = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
 
+/**
+ * SystemManager — 全局单例
+ */
 export class SystemManager implements SystemManagerInterface {
   io: SocketIOServer;
   agents: Map<string, Agent>;
   connections: ConnectionConfig[];
-  cronJobs: Map<string, ScheduledTask[]>;
-  systemPath: string;
-  outputHandlerMiddlewares: OutputHandlerMiddleware[];
+  private _cronJobs: cron.ScheduledTask[];
+  private _app: Express;
+  outputHandlerMiddlewares: Array<(agent: AgentInterface, handler: OutputHandler) => OutputHandler | void>;
 
-  constructor(io: SocketIOServer) {
+  constructor(io: SocketIOServer, app: Express) {
     this.io = io;
     this.agents = new Map();
     this.connections = [];
-    this.cronJobs = new Map();
-    this.systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
+    this._cronJobs = [];
+    this._app = app;
     this.outputHandlerMiddlewares = [];
   }
 
-  useOutputHandler(middleware: OutputHandlerMiddleware): void {
-    if (typeof middleware === 'function') {
-      this.outputHandlerMiddlewares.push(middleware);
-    }
-  }
-
-  buildOutputHandler(agent: AgentInterface, baseHandler: OutputHandler): OutputHandler {
-    let handler = { ...baseHandler };
-    for (const middleware of this.outputHandlerMiddlewares) {
-      try {
-        handler = middleware(agent, handler) || handler;
-      } catch (err) {
-        console.error(
-          `[Plugin] Error in output handler middleware for agent ${agent.id}:`,
-          err
-        );
-      }
-    }
-    return handler;
-  }
-
-  async init(): Promise<void> {
-    await initRAG();
-    await this.loadSystem();
-
-    // Setup daily memory cleanup (forgetting mechanism)
-    cron.schedule('0 3 * * *', async () => {
-      console.log('[System] Running daily memory cleanup...');
-      await cleanupMemories(30, 2);
-    });
-  }
-
+  /**
+   * 加载系统配置并初始化所有子系统
+   */
   async loadSystem(): Promise<void> {
+    // 1. 初始化记忆系统
+    await initMemory();
+
+    // 2. 读取系统配置
+    let config: SystemConfig = { agents: [], connections: [] };
     try {
-      const data = await fs.readFile(this.systemPath, 'utf-8');
-      const system: SystemConfig = JSON.parse(data);
-
-      // Clear existing
-      this.stopAllCronJobs();
-      stopHeartbeat();
-      this.agents.clear();
-      this.connections = system.connections || [];
-      await disconnectMCP();
-
-      // Initialize MCP servers
-      if (system.mcpServers) {
-        console.log('Initializing MCP servers...');
-        await connectMCPServers(system.mcpServers);
-      }
-
-      // Initialize agents
-      for (const agentConfig of system.agents || []) {
-        const agent = new Agent(agentConfig, this);
-        await agent.init();
-        this.agents.set(agent.id, agent);
-
-        // Setup cron if configured
-        const agentData = agentConfig.data || agentConfig.config || {};
-        if (agentData.cronJobs && Array.isArray(agentData.cronJobs)) {
-          for (const job of agentData.cronJobs) {
-            if (job.expression) {
-              this.setupCronJob(agent.id, job.expression, job.prompt);
-            }
-          }
-        } else if (agentData.cron) {
-          this.setupCronJob(
-            agent.id,
-            agentData.cron,
-            'System: Scheduled activation triggered.'
-          );
-        }
-      }
-
-      // Start global heartbeat (e.g., every 60 minutes)
-      startHeartbeat(this, 60);
-
-      console.log(
-        `System loaded with ${this.agents.size} agents and ${this.connections.length} connections.`
-      );
-    } catch (error) {
-      console.log(
-        'No system.json found or error parsing, starting empty system.',
-        error
-      );
-      this.agents.clear();
-      this.connections = [];
-    }
-  }
-
-  setupCronJob(
-    agentId: string,
-    cronExpression: string,
-    prompt: string
-  ): void {
-    if (!cron.validate(cronExpression)) {
-      console.error(
-        `Invalid cron expression for agent ${agentId}: ${cronExpression}`
-      );
-      return;
+      const data = await fs.readFile(SYSTEM_CONFIG_FILE, 'utf-8');
+      config = JSON.parse(data) as SystemConfig;
+    } catch {
+      console.log('[System] 未找到系统配置文件，使用默认配置');
+      config = this._defaultConfig();
     }
 
-    const job = cron.schedule(cronExpression, () => {
-      const agent = this.agents.get(agentId);
-      if (agent) {
-        console.log(`[Cron] Triggering agent ${agentId}`);
-        agent.talk(prompt || 'System: Scheduled activation triggered.');
-      }
-    });
-
-    if (!this.cronJobs.has(agentId)) {
-      this.cronJobs.set(agentId, []);
-    }
-    this.cronJobs.get(agentId)!.push(job);
-  }
-
-  stopAllCronJobs(): void {
-    for (const jobs of this.cronJobs.values()) {
-      for (const job of jobs) {
-        job.stop();
-      }
-    }
-    this.cronJobs.clear();
-  }
-
-  getOrganizationRoster(requestingAgentId: string | null = null): string {
-    if (this.agents.size === 0)
-      return '目前组织里没有其他 Agent。';
-
-    let roster = '组织花名册：\n';
-
-    if (requestingAgentId) {
-      const outgoing = this.connections.filter(
-        (c) => c.source === requestingAgentId
-      );
-      if (outgoing.length > 0) {
-        roster +=
-          '你可以通过 send_message 工具向以下 用户 发送消息：\n';
-        for (const conn of outgoing) {
-          const targetAgent = this.agents.get(conn.target);
-          if (!targetAgent) continue;
-
-          roster += `- ID: ${targetAgent.id} | 名称: ${targetAgent.name} | 简介: ${targetAgent.config.systemPrompt ? targetAgent.config.systemPrompt.slice(0, 100) + '...' : '无描述'}\n`;
-        }
-      } else {
-        roster +=
-          '你当前没有权限向任何其他用户发送消息。\n';
-      }
-    } else {
-      for (const [id, agent] of this.agents.entries()) {
-        roster += `- ID: ${id} | 名称: ${agent.name} | 简介: ${agent.config.systemPrompt ? agent.config.systemPrompt.slice(0, 50) + '...' : '无描述'}\n`;
-      }
+    // 3. 初始化 MCP
+    if (config.mcpServers) {
+      await connectMCPServers(config.mcpServers);
     }
 
-    return roster;
+    // 4. 加载插件
+    await loadPlugins(this, this._app);
+
+    // 5. 创建 Agents
+    this.connections = config.connections || [];
+    for (const agentConf of config.agents) {
+      await this._createAgent(agentConf);
+    }
+
+    // 6. 设置 Cron 任务
+    this._setupCronJobs();
+
+    console.log(
+      `[System] 系统初始化完成 — ${this.agents.size} 个 Agent, ` +
+      `${this.connections.length} 个连接, ` +
+      `${getMCPToolDefinitions().length} 个 MCP 工具`
+    );
   }
 
   /**
-   * 动态创建子 Agent，完成任务后自动汇报给父 Agent 并销毁
+   * 发送全局事件
    */
-  async createChildAgent(
-    parentAgentId: string,
-    options: { name?: string; systemPrompt?: string; task: string }
-  ): Promise<string> {
-    const { name, systemPrompt, task } = options;
-    const parentAgent = this.agents.get(parentAgentId);
-    if (!parentAgent)
-      return `创建失败：找不到父 Agent [${parentAgentId}]`;
-
-    const childId = `child-${Date.now()}`;
-    const childConfig: AgentConfig = {
-      id: childId,
-      name: name || `${parentAgent.name}-helper`,
-      data: {
-        isAgentMode: true,
-        systemPrompt:
-          systemPrompt ||
-          `你是 ${parentAgent.name} 创建的助手，专门负责完成分配给你的任务。完成后请调用 finish_task 工具提交你的工作成果。`,
-        provider: parentAgent.config.provider,
-        model: parentAgent.config.model,
-        apiKey: parentAgent.config.apiKey,
-        baseURL: parentAgent.config.baseURL,
-        maxTokens: parentAgent.config.maxTokens,
-        maxIterations: parentAgent.config.maxIterations || 10,
-      },
-    };
-
-    const childAgent = new Agent(childConfig, this);
-    await childAgent.init();
-    this.agents.set(childId, childAgent);
-
-    // 建立双向连接
-    this.connections.push({
-      id: `edge-${parentAgentId}-${childId}`,
-      source: parentAgentId,
-      target: childId,
-    });
-    this.connections.push({
-      id: `edge-${childId}-${parentAgentId}`,
-      source: childId,
-      target: parentAgentId,
-    });
-
-    console.log(
-      `[System] 智能体 "${childConfig.name}" (${childId}) 已创建，父 Agent: ${parentAgent.name}`
-    );
-
-    // 异步执行任务，完成后将结果汇报给父 Agent 并销毁智能体
-    setTimeout(async () => {
-      try {
-        const result = await childAgent.engine!.talk(task);
-        const report = `[智能体 "${childConfig.name}" 任务汇报]\n任务: ${task}\n结果: ${result}`;
-        parentAgent.talk(report);
-      } catch (err: unknown) {
-        parentAgent.talk(
-          `[智能体 "${childConfig.name}" 执行失败] 错误: ${(err as Error).message}`
-        );
-      } finally {
-        this.agents.delete(childId);
-        this.connections = this.connections.filter(
-          (c) => c.source !== childId && c.target !== childId
-        );
-        console.log(
-          `[System] 智能体 "${childConfig.name}" (${childId}) 已销毁。`
-        );
-      }
-    }, 100);
-
-    return `已创建智能体 "${childConfig.name}" (ID: ${childId})，智能体正在执行任务。完成后会自动汇报结果。你不需要再去自己完成这个任务了。等待智能体的回复即可。`;
+  emitEvent(event: string, data: unknown): void {
+    this.io.emit(event, data);
   }
 
+  /**
+   * 获取组织花名册
+   */
+  getOrganizationRoster(requestingAgentId?: string | null): string {
+    const lines: string[] = ['## 组织成员\n'];
+    for (const [id, agent] of this.agents) {
+      const busy = agent.isBusy ? '🔴 忙碌' : '🟢 空闲';
+      const marker = id === requestingAgentId ? ' ← 你' : '';
+      lines.push(`- **${agent.name}** (${id}) ${busy}${marker}`);
+      if (agent.config.systemPrompt) {
+        const desc = agent.config.systemPrompt.slice(0, 80);
+        lines.push(`  _${desc}${agent.config.systemPrompt.length > 80 ? '…' : ''}_`);
+      }
+    }
+
+    if (this.connections.length > 0) {
+      lines.push('\n## 连接关系\n');
+      for (const conn of this.connections) {
+        const src = this.agents.get(conn.source)?.name || conn.source;
+        const tgt = this.agents.get(conn.target)?.name || conn.target;
+        lines.push(`- ${src} → ${tgt}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * 处理用户消息
+   */
+  async handleUserMessage(message: string, targetAgentId?: string | null): Promise<void> {
+    const target = targetAgentId
+      ? this.agents.get(targetAgentId)
+      : this.agents.values().next().value;
+
+    if (!target) {
+      this.emitEvent('agent:error', {
+        error: '没有可用的 Agent',
+        agentId: targetAgentId || 'unknown',
+      });
+      return;
+    }
+
+    try {
+      await target.talk(message);
+    } catch (err: unknown) {
+      this.emitEvent('agent:error', {
+        error: (err as Error).message,
+        agentId: target.id,
+      });
+    }
+  }
+
+  /**
+   * 中断 Agent
+   */
+  interruptAgent(targetAgentId?: string | null): void {
+    const agent = targetAgentId
+      ? this.agents.get(targetAgentId)
+      : this.agents.values().next().value;
+    if (agent?.engine) {
+      agent.engine.interrupt();
+      agent.isBusy = false;
+    }
+  }
+
+  /**
+   * Agent 间通信
+   */
   async sendMessage(
     sourceAgentId: string,
     targetAgentId: string,
     message: string,
-    context: Record<string, unknown> = {}
+    _context?: Record<string, unknown>
   ): Promise<string> {
-    const sourceAgent = this.agents.get(sourceAgentId);
-    const targetAgent = this.agents.get(targetAgentId);
-
-    if (!sourceAgent)
-      return `发送失败：找不到源 Agent [${sourceAgentId}]`;
-    if (!targetAgent)
-      return `发送失败：找不到目标 Agent [${targetAgentId}]`;
-
-    const hasPermission = this.connections.some(
-      (c) => c.source === sourceAgentId && c.target === targetAgentId
-    );
-    if (!hasPermission) {
-      return `发送失败：你没有权限向 Agent [${targetAgent.name}] 发送消息。请检查组织架构。`;
+    const target = this.agents.get(targetAgentId);
+    if (!target) {
+      // 尝试按名称查找
+      const byName = Array.from(this.agents.values()).find((a) => a.name === targetAgentId);
+      if (byName) {
+        byName.receiveMessage(sourceAgentId, message);
+        return `消息已发送给 ${byName.name}`;
+      }
+      return `未找到目标 Agent: ${targetAgentId}`;
     }
+    target.receiveMessage(sourceAgentId, message);
+    return `消息已发送给 ${target.name}`;
+  }
 
-    console.log(
-      `[Message Bus] ${sourceAgent.name} -> ${targetAgent.name}: ${message.substring(0, 50)}...`
-    );
+  /**
+   * 创建子 Agent
+   */
+  async createChildAgent(
+    parentAgentId: string,
+    opts: { name?: string; systemPrompt?: string; task: string }
+  ): Promise<string> {
+    const id = `child-${Date.now()}`;
+    const name = opts.name || `子Agent-${id.slice(-4)}`;
 
-    const payload = {
-      from: sourceAgent.name,
-      from_id: sourceAgentId,
-      timestamp: new Date().toISOString(),
-      content: message,
-      context: context,
+    const agentConfig: AgentConfig = {
+      id,
+      name,
+      data: {
+        systemPrompt: opts.systemPrompt || `你是 ${name}，被 ${parentAgentId} 创建来执行特定任务。`,
+      },
     };
 
-    const formattedMessage = `[消息来自： ${payload.from}] : ${payload.content}`;
+    const agent = await this._createAgent(agentConfig);
 
-    setTimeout(() => {
-      targetAgent.talk(formattedMessage);
-    }, 100);
+    // 连接父子关系
+    this.connections.push({
+      id: `conn-${Date.now()}`,
+      source: parentAgentId,
+      target: id,
+    });
 
-    return `消息已成功发送给 ${targetAgent.name}。`;
+    // 立即执行任务
+    agent.talk(opts.task).catch((err) => {
+      console.error(`[System] 子 Agent ${name} 执行任务失败:`, err);
+    });
+
+    return `已创建子 Agent "${name}" (${id}) 并分配任务`;
   }
 
-  emitEvent(event: string, data: unknown): void {
-    if (this.io) {
-      this.io.emit(event, data);
+  /**
+   * 构建输出处理器（应用中间件链）
+   */
+  buildOutputHandler(agent: AgentInterface, baseHandler: OutputHandler): OutputHandler {
+    let handler = baseHandler;
+    for (const middleware of this.outputHandlerMiddlewares) {
+      const result = middleware(agent, handler);
+      if (result) handler = result;
     }
+    return handler;
   }
 
-  routeMessage(
-    _sourceAgentId: string,
-    _message: string
+  /**
+   * 注册输出处理器中间件
+   */
+  useOutputHandler(
+    middleware: (agent: AgentInterface, handler: OutputHandler) => OutputHandler | void
   ): void {
-    // 废弃：不再通过关键字隐式路由消息。
-    // 所有的消息路由现在必须通过 send_message 工具显式调用。
-    return;
+    this.outputHandlerMiddlewares.push(middleware);
   }
 
-  async handleUserMessage(
-    message: string,
-    targetAgentId: string | null = null
-  ): Promise<void> {
-    if (this.agents.size === 0) {
-      this.emitEvent('error', {
-        message: 'No agents configured in the system.',
-      });
-      return;
+  /**
+   * 停止所有 Cron 任务
+   */
+  stopAllCronJobs(): void {
+    for (const job of this._cronJobs) {
+      job.stop();
     }
+    this._cronJobs = [];
+  }
 
-    let agent: Agent | undefined;
-    if (targetAgentId) {
-      agent = this.agents.get(targetAgentId);
-    } else {
-      agent = this.agents.values().next().value;
-    }
+  /**
+   * 关闭系统
+   */
+  async shutdown(): Promise<void> {
+    console.log('[System] 正在关闭...');
+    this.stopAllCronJobs();
+    await memoryManager.shutdown();
+    await disconnectAll();
+    console.log('[System] 已关闭');
+  }
 
-    if (agent) {
-      await agent.talk(message);
-    } else {
-      this.emitEvent('error', {
-        message: `Agent ${targetAgentId} not found.`,
-      });
+  /**
+   * 保存系统配置
+   */
+  async saveSystem(): Promise<void> {
+    const config: SystemConfig = {
+      agents: Array.from(this.agents.values()).map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        data: agent.config,
+      })),
+      connections: this.connections,
+    };
+    await fs.mkdir(path.dirname(SYSTEM_CONFIG_FILE), { recursive: true });
+    await fs.writeFile(SYSTEM_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+  }
+
+  // ── 内部方法 ──
+
+  private async _createAgent(agentConf: AgentConfig): Promise<Agent> {
+    const agent = new Agent(agentConf, this);
+    await agent.init();
+    this.agents.set(agent.id, agent);
+    return agent;
+  }
+
+  private _setupCronJobs(): void {
+    for (const [, agent] of this.agents) {
+      const cronJobs = agent.config.cronJobs || [];
+
+      // 旧格式兼容
+      if (agent.config.cron && cronJobs.length === 0) {
+        cronJobs.push({ expression: agent.config.cron, prompt: '执行定时任务' });
+      }
+
+      for (const job of cronJobs) {
+        if (!cron.validate(job.expression)) {
+          console.warn(`[System] 无效的 cron 表达式: ${job.expression} (${agent.name})`);
+          continue;
+        }
+
+        const task = cron.schedule(job.expression, () => {
+          console.log(`[Cron] 触发: ${agent.name} — ${job.prompt}`);
+          agent.talk(job.prompt).catch((err) => {
+            console.error(`[Cron] ${agent.name} 执行失败:`, err);
+          });
+        });
+        this._cronJobs.push(task);
+      }
     }
   }
 
-  interruptAgent(targetAgentId: string | null = null): void {
-    let agent: Agent | undefined;
-    if (targetAgentId) {
-      agent = this.agents.get(targetAgentId);
-    } else {
-      agent = this.agents.values().next().value;
-    }
-
-    if (agent && agent.engine) {
-      agent.engine.interrupt();
-      this.emitEvent('system_message', {
-        message: `已发送中断信号给 Agent ${agent.name}`,
-      });
-    }
+  private _defaultConfig(): SystemConfig {
+    return {
+      agents: [
+        {
+          id: 'midou',
+          name: 'midou',
+          data: {
+            systemPrompt: '你是 midou，一个智能助手。你能使用各种工具来帮助用户完成任务。',
+          },
+        },
+      ],
+      connections: [],
+    };
   }
 }

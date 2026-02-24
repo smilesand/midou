@@ -18,32 +18,20 @@ export const MIDOU_WORKSPACE_DIR: string =
 dotenv.config({ path: path.join(MIDOU_WORKSPACE_DIR, '.env') });
 
 const config: MidouAppConfig = {
-  // AI 模型配置
   llm: {
     provider: process.env.MIDOU_PROVIDER || 'anthropic',
     model: process.env.MIDOU_MODEL || 'MiniMax-M2.5',
     temperature: 0.7,
     maxTokens: 4096,
-
-    anthropic: {
-      baseURL:
-        process.env.MIDOU_API_BASE || 'https://api.minimaxi.com/anthropic',
-      apiKey: process.env.MIDOU_API_KEY || '',
-    },
-
-    openai: {
-      baseURL: process.env.MIDOU_API_BASE || 'https://api.openai.com/v1',
-      apiKey: process.env.MIDOU_API_KEY || '',
-    },
+    apiKey: process.env.MIDOU_API_KEY || '',
+    apiBase: process.env.MIDOU_API_BASE || '',
   },
 
-  // 组织总部路径（公共资产）
   workspace: {
     root: MIDOU_WORKSPACE_DIR,
     assets: path.join(MIDOU_WORKSPACE_DIR, 'assets'),
   },
 
-  // 包的安装位置（源码位置）
   pkg: MIDOU_PKG,
 };
 

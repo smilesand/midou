@@ -42,16 +42,12 @@
     "url": "git+https://github.com/smilesand/midou.git"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.77.0",
-    "@xenova/transformers": "^2.17.2",
-    "chromadb": "^3.3.1",
-    "chromadb-default-embed": "^2.14.0",
+    "@node-llm/core": "^1.12.0",
     "cors": "^2.8.6",
     "dayjs": "^1.11.13",
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
     "node-cron": "^4.2.1",
-    "openai": "^4.80.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"
   },

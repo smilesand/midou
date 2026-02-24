@@ -1,66 +1,95 @@
-import fs from 'fs/promises';
+/**
+ * 插件系统 — 扫描并加载 workspace/plugins 中的插件
+ *
+ * 插件可以注册工具和记忆提供者，扩展系统能力。
+ */
+
 import path from 'path';
-import { registerTool } from './tools.js';
+import fs from 'fs/promises';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
-import type { SystemManagerInterface, Plugin } from './types.js';
+import { registerTool } from './tools.js';
+import { memoryManager } from './memory.js';
+import { createMidouLLM, quickAsk } from './llm.js';
+import type {
+  Plugin,
+  PluginContext,
+  SystemManagerInterface,
+  MemoryProvider,
+} from './types.js';
 import type { Express } from 'express';
 
+const PLUGINS_DIR = path.join(MIDOU_WORKSPACE_DIR, 'plugins');
+
+/**
+ * 扫描并加载所有插件
+ */
 export async function loadPlugins(
   systemManager: SystemManagerInterface,
   app: Express
 ): Promise<void> {
-  const pluginsDir = path.join(MIDOU_WORKSPACE_DIR, 'plugins');
-
+  let entries: string[];
   try {
-    await fs.mkdir(pluginsDir, { recursive: true });
-    const entries = await fs.readdir(pluginsDir, { withFileTypes: true });
+    entries = await fs.readdir(PLUGINS_DIR);
+  } catch {
+    console.log('[Plugin] 插件目录不存在或无法访问:', PLUGINS_DIR);
+    return;
+  }
 
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const pluginPath = path.join(pluginsDir, entry.name, 'index.js');
-        try {
-          await fs.access(pluginPath);
-          const pluginUrl = 'file://' + path.resolve(pluginPath);
-          console.log(
-            `[Plugin] Attempting to load from: ${pluginUrl}`
-          );
-          const module = (await import(pluginUrl)) as Record<string, unknown>;
-          const plugin = (module.default || module) as unknown as Plugin;
+  for (const entry of entries) {
+    const pluginDir = path.join(PLUGINS_DIR, entry);
+    const stat = await fs.stat(pluginDir).catch(() => null);
+    if (!stat?.isDirectory()) continue;
 
-          if (plugin && typeof plugin.install === 'function') {
-            console.log(
-              `[Plugin] Loading plugin: ${plugin.name || entry.name}`
-            );
-            await plugin.install({ systemManager, app, registerTool });
-            console.log(
-              `[Plugin] Successfully loaded: ${plugin.name || entry.name}`
-            );
-          } else if (
-            typeof (module as Record<string, unknown>).install === 'function'
-          ) {
-            console.log(`[Plugin] Loading plugin: ${entry.name}`);
-            await (module as unknown as Plugin).install({
-              systemManager,
-              app,
-              registerTool,
-            });
-            console.log(
-              `[Plugin] Successfully loaded: ${entry.name}`
-            );
-          } else {
-            console.warn(
-              `[Plugin] Plugin ${entry.name} does not export an install function. Module keys: ${Object.keys(module).join(', ')}`
-            );
-          }
-        } catch (err) {
-          console.error(
-            `[Plugin] Failed to load plugin ${entry.name}:`,
-            err
-          );
-        }
+    // 按优先级查找入口文件: index.ts > index.js
+    let indexPath: string | null = null;
+    for (const ext of ['index.ts', 'index.js']) {
+      const candidate = path.join(pluginDir, ext);
+      try {
+        await fs.access(candidate);
+        indexPath = candidate;
+        break;
+      } catch {
+        // 继续尝试下一个
       }
     }
-  } catch (err) {
-    console.error('[Plugin] Error reading plugins directory:', err);
+    if (!indexPath) continue;
+
+    try {
+      const mod = await import(indexPath);
+      const plugin: Plugin = mod.default || mod;
+
+      if (!plugin.install) {
+        console.warn(`[Plugin] ${entry}: 缺少 install 方法，跳过`);
+        continue;
+      }
+
+      // 构建插件上下文（含 LLM 依赖注入）
+      const context: PluginContext = {
+        systemManager,
+        app,
+        registerTool: (definition, handler) => {
+          console.log(`[Plugin] ${entry}: 注册工具 ${definition.function.name}`);
+          registerTool(definition, handler);
+        },
+        registerMemoryProvider: (provider: MemoryProvider) => {
+          console.log(`[Plugin] ${entry}: 注册记忆提供者 ${provider.name}`);
+          memoryManager.register(provider);
+          // 异步初始化
+          provider.init().catch((err) => {
+            console.error(`[Plugin] ${entry}: 记忆提供者 ${provider.name} 初始化失败:`, err);
+          });
+        },
+        // LLM 依赖注入
+        createLLM: (options) => createMidouLLM(options),
+        quickAsk,
+        // 配置信息
+        workspaceDir: MIDOU_WORKSPACE_DIR,
+      };
+
+      await plugin.install(context);
+      console.log(`[Plugin] ✓ 已加载: ${plugin.name || entry}`);
+    } catch (err) {
+      console.error(`[Plugin] ✗ 加载失败: ${entry}`, err);
+    }
   }
 }

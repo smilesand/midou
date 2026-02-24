@@ -2,7 +2,7 @@
  * Unit Tests for core modules
  *
  * Tests tool definitions, TODO module, config loading,
- * and other pure logic that doesn't require LLM calls.
+ * memory system, and other pure logic that doesn't require LLM calls.
  *
  * Usage: npx tsx --test test/test-unit.ts
  */
@@ -33,45 +33,35 @@ describe('Config', () => {
 });
 
 // ---- Tools ----
-describe('Tool Definitions', () => {
-  let toolDefinitions: Array<{
-    type: string;
-    function: { name: string; description: string; parameters: unknown };
-  }>;
-
-  before(async () => {
+describe('Tool System', () => {
+  it('should export createCoreTools and registerTool', async () => {
     const toolsModule = await import('../src/tools.js');
-    toolDefinitions = toolsModule.toolDefinitions;
+    assert.ok(typeof toolsModule.createCoreTools === 'function');
+    assert.ok(typeof toolsModule.registerTool === 'function');
+    assert.ok(typeof toolsModule.executeTool === 'function');
   });
 
-  it('should export toolDefinitions array', () => {
-    assert.ok(
-      Array.isArray(toolDefinitions),
-      'toolDefinitions should be an array'
-    );
-    assert.ok(toolDefinitions.length > 0, 'Should have at least one tool');
+  it('should create core tool instances', async () => {
+    const toolsModule = await import('../src/tools.js');
+    const tools = toolsModule.createCoreTools({
+      systemManager: null,
+      agentId: 'test',
+    });
+    assert.ok(Array.isArray(tools), 'createCoreTools should return an array');
+    assert.ok(tools.length > 0, 'Should have at least one tool');
   });
 
-  it('should have valid tool schema structure', () => {
-    for (const tool of toolDefinitions) {
-      assert.equal(tool.type, 'function', `Tool should have type 'function'`);
-      assert.ok(tool.function, 'Tool should have function property');
-      assert.ok(tool.function.name, 'Tool function should have name');
-      assert.ok(tool.function.description, 'Tool function should have description');
-      assert.ok(tool.function.parameters, 'Tool function should have parameters');
-    }
-  });
-
-  it('should include task control tools', () => {
-    const names = toolDefinitions.map((t) => t.function.name);
-    assert.ok(names.includes('finish_task'), 'Should have finish_task');
-    assert.ok(names.includes('ask_user'), 'Should have ask_user');
-  });
-
-  it('should include all core tools', () => {
-    const names = toolDefinitions.map((t) => t.function.name);
+  it('core tools should include expected tools', async () => {
+    const toolsModule = await import('../src/tools.js');
+    const tools = toolsModule.createCoreTools({
+      systemManager: null,
+      agentId: 'test',
+    });
+    const names = tools.map((t) => t.name);
 
     const expectedTools = [
+      'finish_task',
+      'ask_user',
       'search_memory',
       'add_memory',
       'read_agent_log',
@@ -82,6 +72,7 @@ describe('Tool Definitions', () => {
       'list_system_dir',
       'list_skills',
       'load_skill',
+      'create_todo',
       'update_todo',
       'list_todos',
     ];
@@ -91,10 +82,33 @@ describe('Tool Definitions', () => {
     }
   });
 
-  it('should export registerTool and executeTool functions', async () => {
+  it('should support dynamic tool registration', async () => {
     const toolsModule = await import('../src/tools.js');
-    assert.ok(typeof toolsModule.registerTool === 'function');
-    assert.ok(typeof toolsModule.executeTool === 'function');
+    const initialLen = toolsModule.toolDefinitions.length;
+
+    toolsModule.registerTool(
+      {
+        type: 'function',
+        function: {
+          name: 'test_dynamic_tool',
+          description: 'A test tool',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      async () => 'test result'
+    );
+
+    assert.equal(toolsModule.toolDefinitions.length, initialLen + 1);
+    assert.ok(toolsModule.dynamicToolHandlers.has('test_dynamic_tool'));
+
+    // 通过 executeTool 调用
+    const result = await toolsModule.executeTool(
+      'test_dynamic_tool',
+      {},
+      null,
+      'test'
+    );
+    assert.equal(result, 'test result');
   });
 });
 
@@ -249,5 +263,56 @@ describe('Memory Module', () => {
     const memoryModule = await import('../src/memory.js');
     assert.ok(typeof memoryModule.logConversation === 'function');
     assert.ok(typeof memoryModule.getRecentMemories === 'function');
+  });
+
+  it('should export MemoryManager and FileMemoryProvider', async () => {
+    const memoryModule = await import('../src/memory.js');
+    assert.ok(typeof memoryModule.MemoryManager === 'function');
+    assert.ok(typeof memoryModule.FileMemoryProvider === 'function');
+    assert.ok(memoryModule.memoryManager, 'Should export memoryManager singleton');
+  });
+
+  it('should export initMemory function', async () => {
+    const memoryModule = await import('../src/memory.js');
+    assert.ok(typeof memoryModule.initMemory === 'function');
+  });
+
+  it('SessionMemory should manage conversation history', async () => {
+    const memoryModule = await import('../src/memory.js');
+    const session = new memoryModule.SessionMemory(10);
+
+    session.add('user', 'hello');
+    session.add('assistant', 'hi');
+
+    const messages = session.getMessages();
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].role, 'user');
+    assert.equal(messages[1].role, 'assistant');
+
+    const removed = session.removeLast();
+    assert.ok(removed);
+    assert.equal(removed!.role, 'assistant');
+    assert.equal(session.getMessages().length, 1);
+
+    session.clear();
+    assert.equal(session.getMessages().length, 0);
+  });
+});
+
+// ---- LLM Module ----
+describe('LLM Module', () => {
+  it('should export NodeLLM wrapper functions', async () => {
+    const llmModule = await import('../src/llm.js');
+    assert.ok(typeof llmModule.createMidouLLM === 'function');
+    assert.ok(typeof llmModule.createChat === 'function');
+    assert.ok(typeof llmModule.quickAsk === 'function');
+    assert.ok(typeof llmModule.getProvider === 'function');
+  });
+
+  it('getProvider should return provider info', async () => {
+    const llmModule = await import('../src/llm.js');
+    const info = llmModule.getProvider();
+    assert.ok(info.name, 'Should have provider name');
+    assert.ok(info.model, 'Should have model name');
   });
 });

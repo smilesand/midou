@@ -1,12 +1,17 @@
+/**
+ * 记忆系统 — 会话记忆管理 + 日记系统 + 记忆提供者管理
+ */
+
 import fs from 'fs/promises';
 import path from 'path';
 import dayjs from 'dayjs';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
-import type { ChatMessage } from './types.js';
+import type { ChatMessage, MemoryProvider, MemoryResult } from './types.js';
 
-/**
- * 辅助函数：读取文件
- */
+// ═══════════════════════════════════════════
+// 辅助函数
+// ═══════════════════════════════════════════
+
 async function readFile(relativePath: string): Promise<string | null> {
   try {
     const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
@@ -17,27 +22,18 @@ async function readFile(relativePath: string): Promise<string | null> {
   }
 }
 
-/**
- * 辅助函数：写入文件
- */
 async function writeFile(relativePath: string, content: string): Promise<void> {
   const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
   await fs.mkdir(path.dirname(fullPath), { recursive: true });
   await fs.writeFile(fullPath, content, 'utf-8');
 }
 
-/**
- * 辅助函数：追加文件
- */
 async function appendFile(relativePath: string, content: string): Promise<void> {
   const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
   await fs.mkdir(path.dirname(fullPath), { recursive: true });
   await fs.appendFile(fullPath, content, 'utf-8');
 }
 
-/**
- * 辅助函数：列出目录
- */
 async function listDir(relativePath: string): Promise<string[]> {
   try {
     const fullPath = path.join(MIDOU_WORKSPACE_DIR, relativePath);
@@ -48,16 +44,14 @@ async function listDir(relativePath: string): Promise<string[]> {
   }
 }
 
-/**
- * 获取今天的日期字符串
- */
+// ═══════════════════════════════════════════
+// 日记系统（文件记录）
+// ═══════════════════════════════════════════
+
 export function today(): string {
   return dayjs().format('YYYY-MM-DD');
 }
 
-/**
- * 获取今日日记的路径
- */
 export function todayJournalPath(agentName?: string | null): string {
   if (agentName) {
     return `agents/${agentName}/memory/${today()}.md`;
@@ -65,9 +59,6 @@ export function todayJournalPath(agentName?: string | null): string {
   return `memory/${today()}.md`;
 }
 
-/**
- * 写入今日日记（追加）
- */
 export async function writeJournal(
   content: string,
   agentName: string | null = null
@@ -83,9 +74,6 @@ export async function writeJournal(
   }
 }
 
-/**
- * 记录一次对话到日记
- */
 export async function logConversation(
   agentName: string,
   userMessage: string,
@@ -96,9 +84,6 @@ export async function logConversation(
   await writeJournal(entry, agentName);
 }
 
-/**
- * 读取最近几天的日记（带长度限制）
- */
 export async function getRecentMemories(
   days: number = 2,
   agentName: string | null = null
@@ -126,17 +111,326 @@ export async function getRecentMemories(
   return combined;
 }
 
-/**
- * 获取所有日记文件列表
- */
 export async function listJournals(): Promise<string[]> {
   const files = await listDir('memory');
   return files.filter((f) => f.endsWith('.md')).sort().reverse();
 }
 
+// ═══════════════════════════════════════════
+// 文件记忆提供者（默认实现）
+// ═══════════════════════════════════════════
+
 /**
- * 会话记忆管理器 — 管理当前会话中的对话历史
+ * 基于文件系统的简单记忆提供者 — 默认内置实现
+ *
+ * 使用 JSON 文件存储记忆，支持基于关键词的简单搜索。
+ * 不依赖任何外部服务，适用于轻量级部署。
  */
+export class FileMemoryProvider implements MemoryProvider {
+  readonly name = 'file';
+  private memoriesDir: string;
+
+  constructor() {
+    this.memoriesDir = path.join(MIDOU_WORKSPACE_DIR, 'memories');
+  }
+
+  async init(): Promise<void> {
+    await fs.mkdir(this.memoriesDir, { recursive: true });
+  }
+
+  async shutdown(): Promise<void> {
+    // 文件系统不需要关闭
+  }
+
+  async addMemory(
+    agentId: string,
+    content: string,
+    type: string = 'semantic',
+    importance: number = 3
+  ): Promise<string> {
+    const agentDir = path.join(this.memoriesDir, agentId);
+    await fs.mkdir(agentDir, { recursive: true });
+
+    const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const entry = {
+      id,
+      content,
+      type,
+      importance,
+      confidence: 1.0,
+      status: 'active',
+      createdAt: Date.now(),
+      lastAccessed: Date.now(),
+      accessCount: 0,
+    };
+
+    const filePath = path.join(agentDir, `${id}.json`);
+    await fs.writeFile(filePath, JSON.stringify(entry, null, 2), 'utf-8');
+
+    return id;
+  }
+
+  async searchMemory(
+    agentId: string,
+    query: string,
+    limit: number = 5
+  ): Promise<MemoryResult[]> {
+    const agentDir = path.join(this.memoriesDir, agentId);
+    let files: string[];
+    try {
+      files = await fs.readdir(agentDir);
+    } catch {
+      return [];
+    }
+
+    const queryLower = query.toLowerCase();
+    const queryWords = queryLower.split(/\s+/).filter(Boolean);
+    const results: Array<{ entry: Record<string, unknown>; score: number }> = [];
+
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const data = await fs.readFile(path.join(agentDir, file), 'utf-8');
+        const entry = JSON.parse(data) as Record<string, unknown>;
+        if (entry.status === 'deprecated') continue;
+
+        const content = String(entry.content || '').toLowerCase();
+        // 简单的关键词匹配评分
+        let matchScore = 0;
+        for (const word of queryWords) {
+          if (content.includes(word)) {
+            matchScore += 1;
+          }
+        }
+
+        if (matchScore > 0) {
+          // 时间衰减
+          const ageHours = (Date.now() - (entry.createdAt as number)) / 3600000;
+          const timeDecay = Math.exp(-ageHours / (24 * 30)); // 30 天半衰期
+          const importance = (entry.importance as number) || 3;
+          const confidence = (entry.confidence as number) || 1.0;
+
+          const score = matchScore * confidence * (importance / 5) * (0.5 + 0.5 * timeDecay);
+          results.push({ entry, score });
+        }
+      } catch {
+        // 跳过无法解析的文件
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+
+    return results.slice(0, limit).map((r) => ({
+      content: String(r.entry.content),
+      type: String(r.entry.type || 'semantic'),
+      attentionWeight: Math.min(r.score / 3, 1.0),
+      metrics: {
+        timeDecay: Math.exp(-(Date.now() - (r.entry.createdAt as number)) / (3600000 * 24 * 30)),
+        isRelational: false,
+      },
+      metadata: r.entry as Record<string, unknown>,
+    }));
+  }
+
+  async cleanup(daysOld: number = 30, maxImportanceToForget: number = 2): Promise<number> {
+    const threshold = Date.now() - daysOld * 24 * 3600 * 1000;
+    let cleaned = 0;
+
+    let agentDirs: string[];
+    try {
+      agentDirs = await fs.readdir(this.memoriesDir);
+    } catch {
+      return 0;
+    }
+
+    for (const agentDir of agentDirs) {
+      const dirPath = path.join(this.memoriesDir, agentDir);
+      let files: string[];
+      try {
+        files = await fs.readdir(dirPath);
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const filePath = path.join(dirPath, file);
+          const data = await fs.readFile(filePath, 'utf-8');
+          const entry = JSON.parse(data) as Record<string, unknown>;
+
+          if (
+            (entry.createdAt as number) < threshold &&
+            (entry.importance as number) <= maxImportanceToForget &&
+            (entry.accessCount as number || 0) < 3
+          ) {
+            entry.status = 'deprecated';
+            await fs.writeFile(filePath, JSON.stringify(entry, null, 2), 'utf-8');
+            cleaned++;
+          }
+        } catch {
+          // 跳过
+        }
+      }
+    }
+
+    return cleaned;
+  }
+}
+
+// ═══════════════════════════════════════════
+// 记忆管理器（统一门面）
+// ═══════════════════════════════════════════
+
+/**
+ * 记忆管理器 — 管理多个记忆提供者，提供统一的记忆操作入口
+ */
+export class MemoryManager {
+  private providers: Map<string, MemoryProvider> = new Map();
+  private _defaultProvider: string = 'file';
+
+  /**
+   * 注册记忆提供者
+   */
+  register(provider: MemoryProvider): void {
+    this.providers.set(provider.name, provider);
+    console.log(`[Memory] 已注册记忆提供者: ${provider.name}`);
+  }
+
+  /**
+   * 设置默认提供者
+   */
+  setDefault(name: string): void {
+    if (!this.providers.has(name)) {
+      console.warn(`[Memory] 提供者 "${name}" 未注册，保持当前默认: ${this._defaultProvider}`);
+      return;
+    }
+    this._defaultProvider = name;
+    console.log(`[Memory] 默认记忆提供者已切换为: ${name}`);
+  }
+
+  /**
+   * 获取指定提供者（不指定则返回默认提供者）
+   */
+  getProvider(name?: string): MemoryProvider | undefined {
+    return this.providers.get(name || this._defaultProvider);
+  }
+
+  /**
+   * 初始化所有提供者
+   */
+  async init(): Promise<void> {
+    for (const [name, provider] of this.providers) {
+      try {
+        await provider.init();
+        console.log(`[Memory] 提供者 "${name}" 初始化成功`);
+      } catch (err) {
+        console.error(`[Memory] 提供者 "${name}" 初始化失败:`, err);
+      }
+    }
+  }
+
+  /**
+   * 关闭所有提供者
+   */
+  async shutdown(): Promise<void> {
+    for (const [name, provider] of this.providers) {
+      try {
+        await provider.shutdown();
+      } catch (err) {
+        console.error(`[Memory] 提供者 "${name}" 关闭失败:`, err);
+      }
+    }
+  }
+
+  /**
+   * 存入记忆（广播到所有提供者）
+   */
+  async addMemory(
+    agentId: string,
+    content: string,
+    type: string = 'semantic',
+    importance: number = 3
+  ): Promise<string> {
+    const results: string[] = [];
+    for (const [, provider] of this.providers) {
+      try {
+        const id = await provider.addMemory(agentId, content, type, importance);
+        results.push(id);
+      } catch (err) {
+        console.error(`[Memory] 提供者 "${provider.name}" addMemory 失败:`, err);
+      }
+    }
+    return results[0] || '';
+  }
+
+  /**
+   * 搜索记忆（聚合所有提供者的结果）
+   */
+  async searchMemory(
+    agentId: string,
+    query: string,
+    limit: number = 5
+  ): Promise<MemoryResult[]> {
+    const allResults: MemoryResult[] = [];
+
+    for (const [, provider] of this.providers) {
+      try {
+        const results = await provider.searchMemory(agentId, query, limit);
+        allResults.push(...results);
+      } catch (err) {
+        console.error(`[Memory] 提供者 "${provider.name}" searchMemory 失败:`, err);
+      }
+    }
+
+    // 按 attentionWeight 排序，去重，截取
+    allResults.sort((a, b) => b.attentionWeight - a.attentionWeight);
+
+    // 简单去重（基于内容前 100 字符）
+    const seen = new Set<string>();
+    const deduped = allResults.filter((r) => {
+      const key = r.content.slice(0, 100);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return deduped.slice(0, limit);
+  }
+
+  /**
+   * 清理旧记忆（所有提供者）
+   */
+  async cleanup(daysOld: number = 30, maxImportanceToForget: number = 2): Promise<number> {
+    let total = 0;
+    for (const [, provider] of this.providers) {
+      try {
+        total += await provider.cleanup(daysOld, maxImportanceToForget);
+      } catch (err) {
+        console.error(`[Memory] 提供者 "${provider.name}" cleanup 失败:`, err);
+      }
+    }
+    return total;
+  }
+}
+
+// ── 全局单例 ──
+
+export const memoryManager = new MemoryManager();
+
+/**
+ * 初始化记忆系统（注册默认的文件提供者）
+ */
+export async function initMemory(): Promise<void> {
+  const fileProvider = new FileMemoryProvider();
+  memoryManager.register(fileProvider);
+  await memoryManager.init();
+}
+
+// ═══════════════════════════════════════════
+// 会话记忆管理器
+// ═══════════════════════════════════════════
+
 export class SessionMemory {
   messages: ChatMessage[];
   maxMessages: number;

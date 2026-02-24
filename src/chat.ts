@@ -1,20 +1,29 @@
 /**
- * 对话引擎 — midou 思考和表达的核心
+ * ChatEngine — 基于 NodeLLM 的对话引擎
+ *
+ * 使用 NodeLLM 的 chat.stream() + withTool() 实现流式对话和工具调用。
+ * ToolHalt 模式用于 finish_task / ask_user 以中断自动工具循环。
  */
 
-import { LLMClient } from './llm.js';
-import { toolDefinitions, executeTool } from './tools.js';
+import { createMidouLLM, createChat } from './llm.js';
+import type { NodeLLMInstance, NodeLLMChat } from './llm.js';
+import { createCoreTools, executeTool, getLegacyTools, type ToolContext } from './tools.js';
+import { SessionMemory, memoryManager, logConversation, getRecentMemories } from './memory.js';
+import { buildSkillsPrompt } from './skills.js';
 import { getMCPToolDefinitions } from './mcp.js';
-import { SessionMemory } from './memory.js';
+import config from './config.js';
 import type {
+  AgentData,
   OutputHandler,
-  LLMConfig,
   ChatMessage,
-  ToolDefinition,
+  LLMConfig,
+  ChatEngineInterface,
   SystemManagerInterface,
 } from './types.js';
 
-const dummyOutputHandler: OutputHandler = {
+// ── 默认的 noop OutputHandler ──
+
+const noopHandler: OutputHandler = {
   onThinkingStart: () => {},
   onThinkingDelta: () => {},
   onThinkingEnd: () => {},
@@ -31,351 +40,227 @@ const dummyOutputHandler: OutputHandler = {
 };
 
 /**
- * 对话引擎
+ * ChatEngine — 每个 Agent 拥有一个独立的引擎实例
  */
-export class ChatEngine {
+export class ChatEngine implements ChatEngineInterface {
   session: SessionMemory;
-  turnCount: number;
-  showThinking: boolean;
-  lastThinking: string;
-  output: OutputHandler;
-  isBusy: boolean;
-  isInterrupted: boolean;
-  isAgentMode: boolean;
-  llmClient: LLMClient;
-  systemManager: SystemManagerInterface | null;
   agentId: string;
-  maxIterations: number | null;
+  agentName: string;
+  systemPrompt: string;
+  agentData: AgentData;
+  systemManager: SystemManagerInterface | null;
+
+  private _outputHandler: OutputHandler;
+  private _aborted: boolean;
+  private _maxIterations: number;
 
   constructor(
-    systemPrompt: string,
-    outputHandler: OutputHandler | null = null,
-    llmConfig: LLMConfig = {},
-    systemManager: SystemManagerInterface | null = null,
-    isAgentMode: boolean = true,
-    agentId: string = 'default',
-    maxIterations: number | null = null
+    agentId: string,
+    agentName: string,
+    agentData: AgentData = {},
+    systemManager: SystemManagerInterface | null = null
   ) {
-    this.session = new SessionMemory();
-    this.session.add('system', systemPrompt);
-    this.turnCount = 0;
-    this.showThinking = true;
-    this.lastThinking = '';
-    this.output = outputHandler || dummyOutputHandler;
-    this.isBusy = false;
-    this.isInterrupted = false;
-    this.isAgentMode = isAgentMode;
-    this.llmClient = new LLMClient(llmConfig);
-    this.systemManager = systemManager;
     this.agentId = agentId;
-    this.maxIterations = maxIterations;
+    this.agentName = agentName;
+    this.agentData = agentData;
+    this.systemPrompt = agentData.systemPrompt || '';
+    this.systemManager = systemManager;
+    this.session = new SessionMemory();
+    this._outputHandler = { ...noopHandler };
+    this._aborted = false;
+    this._maxIterations = Number(agentData.maxIterations) || 20;
   }
 
   setOutputHandler(handler: OutputHandler): void {
-    this.output = handler || dummyOutputHandler;
+    this._outputHandler = handler;
   }
 
   interrupt(): void {
-    this.isInterrupted = true;
+    this._aborted = true;
   }
 
-  _getTools(): ToolDefinition[] {
-    const mcpTools = getMCPToolDefinitions();
-    return [...toolDefinitions, ...mcpTools];
-  }
-
+  /**
+   * 核心对话方法 — 处理用户消息，驱动流式工具循环
+   */
   async talk(userMessage: string): Promise<string> {
-    if (this.isBusy) {
-      const busyMsg = '还在思考中，请稍等一下哦…';
-      this.output.onTextDelta(busyMsg + '\n');
-      return busyMsg;
+    this._aborted = false;
+
+    // 1. 构建完整系统提示
+    const fullSystemPrompt = await this._buildSystemPrompt();
+
+    // 2. 记录用户消息
+    this.session.add('user', userMessage);
+
+    // 3. 获取 LLM 配置
+    const llmConfig = this._getLLMConfig();
+
+    // 4. 创建 NodeLLM 实例和 Chat
+    const llm = createMidouLLM(llmConfig);
+    const model = llmConfig.model || config.llm.model;
+    const chat = llm.chat(model);
+
+    // 5. 设置系统提示
+    chat.system(fullSystemPrompt);
+
+    // 6. 注入历史消息
+    const history = this.session.getMessages().filter((m) => m.role !== 'system');
+    // 除了最后一条（就是刚加的 user 消息），其余作为历史
+    for (const msg of history.slice(0, -1)) {
+      chat.add(msg.role as 'user' | 'assistant', msg.content || '');
     }
 
-    this.isBusy = true;
-    this.isInterrupted = false;
-    try {
-      this.turnCount++;
-      this.session.add('user', userMessage);
-      const response = await this._thinkWithTools();
-      return response;
-    } finally {
-      this.isBusy = false;
-    }
-  }
-
-  async _thinkWithTools(): Promise<string> {
-    const messages = this.session.getMessages();
-    let fullResponse = '';
-    let iterations = 0;
-    const maxIterations =
-      this.maxIterations || (this.isAgentMode ? 100 : 30);
-    const tools = this._getTools();
-    let isCompleted = false;
-
-    const markComplete = (truncated: boolean = false) => {
-      if (!isCompleted) {
-        this.output.onTextComplete(truncated);
-        isCompleted = true;
-      }
+    // 7. 准备工具
+    const toolCtx: ToolContext = {
+      systemManager: this.systemManager,
+      agentId: this.agentId,
     };
+    const coreTools = createCoreTools(toolCtx);
 
-    while (iterations < maxIterations) {
-      if (this.isInterrupted) {
-        this.output.onError('任务已被用户中断。');
-        markComplete(true);
-        break;
-      }
-
-      iterations++;
-      let completeMessage: ChatMessage | null = null;
-      let iterationText = '';
-      let thinkingText = '';
-
-      try {
-        for await (const event of this.llmClient.chatStreamWithTools(
-          messages,
-          tools
-        )) {
-          switch (event.type) {
-            case 'thinking_start':
-              if (this.showThinking) {
-                this.output.onThinkingStart();
-              }
-              break;
-
-            case 'thinking_delta':
-              thinkingText += event.text;
-              if (this.showThinking) {
-                this.output.onThinkingDelta(event.text);
-              }
-              break;
-
-            case 'thinking_end':
-              this.lastThinking = event.fullText || thinkingText;
-              if (this.showThinking && thinkingText) {
-                this.output.onThinkingEnd(thinkingText);
-              } else if (thinkingText) {
-                this.output.onThinkingHidden(thinkingText.length);
-              }
-              break;
-
-            case 'text_delta':
-              iterationText += event.text;
-              this.output.onTextDelta(event.text);
-              break;
-
-            case 'tool_start':
-              this.output.onToolStart(event.name);
-              break;
-
-            case 'tool_end':
-              this.output.onToolEnd(event.name, event.input);
-              break;
-
-            case 'message_complete':
-              completeMessage = event.message;
-              completeMessage._stopReason = event.stopReason || undefined;
-              break;
-          }
-        }
-
-        if (iterationText) {
-          fullResponse += (fullResponse ? '\n' : '') + iterationText;
-        }
-
-        const stopReason = completeMessage?._stopReason;
-        const naturalStops = [
-          'end_turn',
-          'stop',
-          'stop_sequence',
-          'tool_use',
-          'tool_calls',
-        ];
-        const isTruncated =
-          stopReason === 'max_tokens' ||
-          (stopReason !== undefined &&
-            !naturalStops.includes(stopReason));
-
-        if (
-          !completeMessage?.tool_calls ||
-          completeMessage.tool_calls.length === 0
-        ) {
-          if (iterationText) {
-            this.session.add('assistant', iterationText);
-          }
-
-          if (this.isAgentMode) {
-            const promptMsg: ChatMessage = {
-              role: 'user',
-              content:
-                '你没有调用任何工具。请继续执行任务。如果任务已彻底完成，请调用 finish_task 工具结束任务。',
-            };
-            this.session.add(promptMsg);
-            messages.push(promptMsg);
-            this.output.onTextDelta(
-              '\n[系统提示：等待 Agent 决定下一步行动...]\n'
-            );
-            continue;
-          } else {
-            markComplete(isTruncated);
-            break;
-          }
-        }
-
-        if (iterationText && this.output.onTextPartComplete) {
-          this.output.onTextPartComplete();
-        } else if (isTruncated) {
-          markComplete(true);
-          break;
-        }
-
-        this.session.add(completeMessage);
-        messages.push(completeMessage);
-
-        let shouldBreakLoop = false;
-
-        for (const tc of completeMessage.tool_calls!) {
-          let args: Record<string, unknown>;
-          try {
-            args = JSON.parse(tc.function.arguments);
-          } catch {
-            args = {};
-          }
-
-          this.output.onToolExec(tc.function.name, args);
-
-          if (tc.function.name === 'run_command' && args.command) {
-            const confirmed = await this.output.confirmCommand(
-              args.command as string
-            );
-            if (!confirmed) {
-              const rejectMsg: ChatMessage = {
-                role: 'tool',
-                tool_call_id: tc.id,
-                content: '用户拒绝执行该命令。',
-              };
-              this.session.add(rejectMsg);
-              messages.push(rejectMsg);
-              this.output.onError('命令已被用户拒绝');
-              continue;
-            }
-          }
-
-          let result: string;
-          try {
-            result = await executeTool(
-              tc.function.name,
-              args,
-              this.systemManager,
-              this.agentId
-            );
-            this.output.onToolResult();
-          } catch (e: unknown) {
-            result = `工具执行出错: ${(e as Error).message}`;
-            this.output.onError(
-              `工具执行失败: ${(e as Error).message}`
-            );
-          }
-
-          const resultMsg: ChatMessage = {
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: String(result),
-          };
-          this.session.add(resultMsg);
-          messages.push(resultMsg);
-
-          if (
-            tc.function.name === 'finish_task' ||
-            tc.function.name === 'ask_user'
-          ) {
-            shouldBreakLoop = true;
-          }
-        }
-
-        if (shouldBreakLoop) {
-          markComplete(false);
-          break;
-        }
-
-        if (isTruncated) {
-          markComplete(true);
-          break;
-        }
-
-        iterationText = '';
-      } catch (error: unknown) {
-        if (iterationText) {
-          markComplete();
-        }
-
-        this.output.onError(`${(error as Error).message}，重试中…`);
-
-        const lastMsgs = this.session.messages;
-        const lastMsg = lastMsgs[lastMsgs.length - 1];
-        if (lastMsg?.role === 'assistant' && lastMsg.tool_calls) {
-          this.session.removeLast();
-        }
-
-        fullResponse = await this._streamResponse();
-        isCompleted = true;
-        break;
-      }
+    // 注册核心工具
+    for (const tool of coreTools) {
+      chat.withTool(tool);
     }
 
-    if (!isCompleted) {
-      markComplete(false);
+    // 注册 MCP 工具（通过 ToolDefinition 格式）
+    try {
+      const mcpDefs = getMCPToolDefinitions();
+      for (const def of mcpDefs) {
+        const mcpToolName = def.function.name;
+        const toolDef = {
+          type: 'function' as const,
+          function: {
+            name: mcpToolName,
+            description: def.function.description || '',
+            parameters: def.function.parameters || {},
+          },
+          handler: async (args: unknown) => {
+            return await executeTool(mcpToolName, args as Record<string, unknown>, this.systemManager, this.agentId);
+          },
+        };
+        chat.withTool(toolDef);
+      }
+    } catch {
+      // MCP 初始化可能还没完成
     }
 
-    return fullResponse;
-  }
+    // 8. 设置生命周期钩子
+    chat.onToolCallStart((toolCall: unknown) => {
+      const tc = toolCall as { function?: { name?: string } };
+      this._outputHandler.onToolStart(tc?.function?.name || 'unknown');
+    });
 
-  async _streamResponse(): Promise<string> {
-    const messages = this.session.getMessages();
+    chat.onToolCallEnd((toolCall: unknown, result: unknown) => {
+      const tc = toolCall as { function?: { name?: string } };
+      this._outputHandler.onToolEnd(tc?.function?.name || 'unknown', result);
+      this._outputHandler.onToolResult();
+    });
+
+    // 9. 流式调用
     let fullResponse = '';
-    let stopReason: string | null = null;
-    let isCompleted = false;
+    let haltMessage: string | null = null;
 
     try {
-      for await (const event of this.llmClient.chatStreamWithTools(
-        messages,
-        []
-      )) {
-        if (event.type === 'text_delta') {
-          this.output.onTextDelta(event.text);
-          fullResponse += event.text;
-        } else if (event.type === 'message_complete') {
-          stopReason = event.stopReason;
+      const stream = chat.stream(userMessage, {
+        maxToolCalls: this._maxIterations,
+      });
+
+      for await (const chunk of stream) {
+        if (this._aborted) {
+          this._outputHandler.onTextComplete(true);
+          break;
+        }
+
+        // ChatChunk has { content, thinking?, tool_calls?, done?, ... }
+        if (chunk.content) {
+          fullResponse += chunk.content;
+          this._outputHandler.onTextDelta(chunk.content);
+        }
+        if (chunk.thinking?.text) {
+          this._outputHandler.onThinkingDelta(chunk.thinking.text);
         }
       }
 
-      const naturalStops = ['end_turn', 'stop', 'stop_sequence'];
-      const isTruncated =
-        stopReason === 'max_tokens' ||
-        (stopReason !== null && !naturalStops.includes(stopReason));
+      this._outputHandler.onTextPartComplete();
+      this._outputHandler.onTextComplete(false);
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
 
-      this.output.onTextComplete(isTruncated);
-      isCompleted = true;
-      if (fullResponse) {
-        this.session.add('assistant', fullResponse);
+      // ToolHalt 是正常的流程控制
+      if (errorMsg.includes('ToolHalt') || errorMsg.includes('halt')) {
+        haltMessage = errorMsg;
+      } else {
+        this._outputHandler.onError(`LLM 调用失败: ${errorMsg}`);
+        fullResponse = `[错误] ${errorMsg}`;
       }
-    } catch (error: unknown) {
-      this.output.onError(
-        `重试失败: ${(error as Error).message}`
-      );
-    } finally {
-      if (!isCompleted) {
-        this.output.onTextComplete(false);
+    }
+
+    // 10. 处理 halt 消息（finish_task / ask_user）
+    if (haltMessage) {
+      if (!fullResponse) {
+        fullResponse = haltMessage.replace(/^.*ToolHalt:\s*/, '');
       }
+    }
+
+    // 11. 记录到会话和日记
+    this.session.add('assistant', fullResponse);
+    try {
+      await logConversation(this.agentName, userMessage, fullResponse);
+    } catch {
+      // 日记记录失败不影响主流程
     }
 
     return fullResponse;
   }
 
-  updateSystemPrompt(newPrompt: string): void {
-    const messages = this.session.getMessages();
-    if (messages.length > 0 && messages[0].role === 'system') {
-      messages[0].content = newPrompt;
+  // ── 内部方法 ──
+
+  private _getLLMConfig(): LLMConfig {
+    return {
+      provider: this.agentData.provider || config.llm.provider,
+      model: this.agentData.model || config.llm.model,
+      apiKey: this.agentData.apiKey || config.llm.apiKey,
+      baseURL: this.agentData.baseURL || config.llm.apiBase,
+      maxTokens: Number(this.agentData.maxTokens) || config.llm.maxTokens,
+    };
+  }
+
+  private async _buildSystemPrompt(): Promise<string> {
+    const parts: string[] = [];
+
+    // 基础系统提示
+    parts.push(this.systemPrompt || `你是 ${this.agentName}，一个有用的 AI 助手。`);
+
+    // 技能列表
+    try {
+      const skillsPrompt = await buildSkillsPrompt();
+      if (skillsPrompt) parts.push(skillsPrompt);
+    } catch {
+      // 技能模块不可用
     }
+
+    // 最近记忆摘要
+    try {
+      const recentMemories = await getRecentMemories(1, this.agentName);
+      if (recentMemories.trim()) {
+        parts.push(`## 近期记忆\n\n${recentMemories}`);
+      }
+    } catch {
+      // 记忆不可用
+    }
+
+    // 长期记忆
+    try {
+      const memories = await memoryManager.searchMemory(this.agentId, 'recent context', 3);
+      if (memories.length > 0) {
+        const memText = memories.map(
+          (m) => `- [${m.type}] ${m.content}`
+        ).join('\n');
+        parts.push(`## 长期记忆\n\n${memText}`);
+      }
+    } catch {
+      // 长期记忆不可用
+    }
+
+    return parts.join('\n\n');
   }
 }

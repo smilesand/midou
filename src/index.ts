@@ -1,402 +1,266 @@
-#!/usr/bin/env node
-import 'dotenv/config';
-import express, {
-  type Request,
-  type Response,
-  type NextFunction,
-} from 'express';
+/**
+ * midou — 多智能体 AI 系统入口
+ *
+ * Express + Socket.IO 服务器，提供 REST API 和实时通信。
+ */
+
+import express from 'express';
 import { createServer } from 'http';
-import { Server } from 'socket.io';
+import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import { SystemManager } from './system.js';
-import { disconnectAll as disconnectMCP } from './mcp.js';
-import { MIDOU_WORKSPACE_DIR, MIDOU_PKG } from './config.js';
-import { getRecentMemories } from './memory.js';
-import {
-  getTodoItems,
-  addTodoItem,
-  updateTodoStatus,
-  deleteTodoItem,
-} from './todo.js';
-import { loadPlugins } from './plugin.js';
-import { shutdownRAG } from './rag/index.js';
-import type { ChatMessage } from './types.js';
+import { heartbeat, memoryCleanup } from './heartbeat.js';
+import { getTodoItems, addTodoItem, updateTodoStatus, deleteTodoItem } from './todo.js';
+import config, { MIDOU_PKG, MIDOU_WORKSPACE_DIR } from './config.js';
+import type {
+  OutputHandler,
+  AgentInterface,
+  AgentConfig,
+} from './types.js';
+
+// 加载环境变量
+dotenv.config();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-
-// Serve static files from the Vue frontend build
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-app.use(express.static(path.join(MIDOU_PKG, 'web/dist')));
-
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
+const server = createServer(app);
+const io = new SocketIOServer(server, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-let systemManager: SystemManager | null = null;
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
 
-async function bootstrap(): Promise<void> {
-  if (!fs.existsSync(MIDOU_WORKSPACE_DIR)) {
-    fs.mkdirSync(MIDOU_WORKSPACE_DIR, { recursive: true });
-  }
+// ── 全局系统管理器 ──
 
-  // 首次运行时，从模板目录初始化 workspace
-  const templateDir = path.join(MIDOU_PKG, 'workspace');
-  if (fs.existsSync(templateDir)) {
-    const templateFiles = ['SOUL.md', 'HEARTBEAT.md', 'system.json'];
-    for (const file of templateFiles) {
-      const dest = path.join(MIDOU_WORKSPACE_DIR, file);
-      const src = path.join(templateDir, file);
-      if (!fs.existsSync(dest) && fs.existsSync(src)) {
-        fs.cpSync(src, dest);
-        console.log(`[Init] Created ${file} from template.`);
-      }
+let systemManager: SystemManager;
+
+// ═══════════════════════════════════════════
+// REST API
+// ═══════════════════════════════════════════
+
+// 系统信息
+app.get('/api/status', (_req, res) => {
+  const agents: Array<{ id: string; name: string; busy: boolean }> = [];
+  if (systemManager) {
+    for (const [id, agent] of systemManager.agents) {
+      agents.push({ id, name: agent.name, busy: agent.isBusy });
     }
   }
+  res.json({
+    version: MIDOU_PKG,
+    provider: config.llm.provider,
+    model: config.llm.model,
+    agents,
+    workspace: MIDOU_WORKSPACE_DIR,
+  });
+});
 
-  systemManager = new SystemManager(io);
+// Agent 列表
+app.get('/api/agents', (_req, res) => {
+  const list: Array<Record<string, unknown>> = [];
+  if (systemManager) {
+    for (const [, agent] of systemManager.agents) {
+      list.push({
+        id: agent.id,
+        name: agent.name,
+        config: agent.config,
+        busy: agent.isBusy,
+      });
+    }
+  }
+  res.json(list);
+});
 
-  // Load plugins before system initialization so that middlewares are registered
-  await loadPlugins(systemManager, app);
+// 发送消息
+app.post('/api/chat', async (req, res) => {
+  const { message, agentId } = req.body as { message?: string; agentId?: string };
+  if (!message) {
+    res.status(400).json({ error: '缺少 message 参数' });
+    return;
+  }
+  try {
+    await systemManager.handleUserMessage(message, agentId);
+    res.json({ ok: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 
-  await systemManager.init();
+// 中断
+app.post('/api/interrupt', (req, res) => {
+  const { agentId } = req.body as { agentId?: string };
+  systemManager.interruptAgent(agentId);
+  res.json({ ok: true });
+});
 
-  console.log('Midou backend initialized successfully.');
-}
+// Heartbeat
+app.post('/api/heartbeat', async (req, res) => {
+  const { agentId } = req.body as { agentId?: string };
+  const result = await heartbeat(agentId || 'midou');
+  res.json({ result });
+});
+
+// TODO API
+app.get('/api/todos', async (req, res) => {
+  const agentId = (req.query.agentId as string) || null;
+  const items = await getTodoItems(agentId);
+  res.json(items);
+});
+
+app.post('/api/todos', async (req, res) => {
+  const { agentId, title, description } = req.body as {
+    agentId?: string; title?: string; description?: string;
+  };
+  if (!title) {
+    res.status(400).json({ error: '缺少 title' });
+    return;
+  }
+  const item = await addTodoItem(agentId || 'midou', title, description);
+  res.json(item);
+});
+
+app.put('/api/todos/:id', async (req, res) => {
+  const item = await updateTodoStatus(req.params.id, req.body);
+  if (!item) {
+    res.status(404).json({ error: 'Todo not found' });
+    return;
+  }
+  res.json(item);
+});
+
+app.delete('/api/todos/:id', async (req, res) => {
+  const ok = await deleteTodoItem(req.params.id);
+  res.json({ ok });
+});
+
+// 系统配置
+app.get('/api/system', async (_req, res) => {
+  const agents: AgentConfig[] = [];
+  for (const [, agent] of systemManager.agents) {
+    agents.push({
+      id: agent.id,
+      name: agent.name,
+      data: agent.config,
+    });
+  }
+  res.json({
+    agents,
+    connections: systemManager.connections,
+  });
+});
+
+app.post('/api/system', async (req, res) => {
+  try {
+    await systemManager.saveSystem();
+    res.json({ ok: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// 记忆清理
+app.post('/api/memory/cleanup', async (_req, res) => {
+  const cleaned = await memoryCleanup();
+  res.json({ cleaned });
+});
+
+// ═══════════════════════════════════════════
+// Socket.IO 实时通信
+// ═══════════════════════════════════════════
 
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  console.log('[WS] 客户端已连接:', socket.id);
 
-  socket.on(
-    'message',
-    async (data: { content: string; targetAgentId?: string }) => {
-      if (!systemManager) {
-        socket.emit('error', { message: 'System not initialized' });
-        return;
-      }
+  socket.on('chat:send', async (data: { message: string; agentId?: string }) => {
+    const { message, agentId } = data;
+    const targetId = agentId || 'midou';
+    const agent = systemManager.agents.get(targetId);
+    if (!agent) {
+      socket.emit('agent:error', { error: `Agent ${targetId} 不存在` });
+      return;
+    }
 
-      try {
-        await systemManager.handleUserMessage(
-          data.content,
-          data.targetAgentId || null
-        );
-      } catch (error: unknown) {
-        console.error('Chat error:', error);
-        socket.emit('error', {
-          message: (error as Error).message,
+    // 构建 Socket 输出处理器
+    const baseHandler: OutputHandler = {
+      onThinkingStart: () => socket.emit('agent:thinking_start', { agentId: targetId }),
+      onThinkingDelta: (text) => socket.emit('agent:thinking_delta', { agentId: targetId, text }),
+      onThinkingEnd: (fullText) => socket.emit('agent:thinking_end', { agentId: targetId, fullText }),
+      onThinkingHidden: (length) => socket.emit('agent:thinking_hidden', { agentId: targetId, length }),
+      onTextDelta: (text) => socket.emit('agent:text_delta', { agentId: targetId, text }),
+      onTextPartComplete: () => socket.emit('agent:text_part_complete', { agentId: targetId }),
+      onTextComplete: (truncated) => socket.emit('agent:text_complete', { agentId: targetId, truncated }),
+      onToolStart: (name) => socket.emit('agent:tool_start', { agentId: targetId, name }),
+      onToolEnd: (name, input) => socket.emit('agent:tool_end', { agentId: targetId, name, input }),
+      onToolExec: (name, args) => socket.emit('agent:tool_exec', { agentId: targetId, name, args }),
+      onToolResult: () => socket.emit('agent:tool_result', { agentId: targetId }),
+      onError: (msg) => socket.emit('agent:error', { agentId: targetId, error: msg }),
+      confirmCommand: async (command) => {
+        return new Promise((resolve) => {
+          socket.emit('agent:confirm_command', { agentId: targetId, command });
+          socket.once('agent:confirm_response', (resp: { confirmed: boolean }) => {
+            resolve(resp.confirmed);
+          });
+          // 30 秒超时自动拒绝
+          setTimeout(() => resolve(false), 30000);
         });
-      }
-    }
-  );
+      },
+    };
 
-  socket.on(
-    'interrupt',
-    (data: { targetAgentId?: string }) => {
-      if (!systemManager) return;
-      try {
-        systemManager.interruptAgent(data.targetAgentId || null);
-      } catch (error) {
-        console.error('Interrupt error:', error);
-      }
+    // 应用中间件
+    const handler = systemManager.buildOutputHandler(agent, baseHandler);
+    agent.setOutputHandler(handler);
+
+    try {
+      await agent.talk(message);
+    } catch (err: unknown) {
+      socket.emit('agent:error', { agentId: targetId, error: (err as Error).message });
     }
-  );
+  });
+
+  socket.on('chat:interrupt', (data: { agentId?: string }) => {
+    systemManager.interruptAgent(data.agentId);
+  });
 
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    console.log('[WS] 客户端断开:', socket.id);
   });
 });
 
-// API Routes for Graph Editor
-app.get('/api/system', (_req: Request, res: Response) => {
-  const systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
-  if (fs.existsSync(systemPath)) {
-    res.json(JSON.parse(fs.readFileSync(systemPath, 'utf-8')));
-  } else {
-    res.json({ agents: [], connections: [] });
-  }
-});
+// ═══════════════════════════════════════════
+// 启动
+// ═══════════════════════════════════════════
 
-app.post(
-  '/api/system',
-  async (req: Request, res: Response) => {
-    const systemPath = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
-    fs.writeFileSync(
-      systemPath,
-      JSON.stringify(req.body, null, 2)
-    );
+async function main(): Promise<void> {
+  console.log(`\n🎀 midou ${MIDOU_PKG}`);
+  console.log(`   Provider: ${config.llm.provider}`);
+  console.log(`   Model: ${config.llm.model}`);
+  console.log(`   Workspace: ${MIDOU_WORKSPACE_DIR}\n`);
 
-    // Reload system dynamically
-    if (systemManager) {
-      await systemManager.loadSystem();
-    }
+  systemManager = new SystemManager(io, app);
+  await systemManager.loadSystem();
 
-    res.json({ success: true });
-  }
-);
-
-interface HistoryMessage {
-  role: string;
-  agent: string;
-  content: string;
+  const port = parseInt(process.env.MIDOU_PORT || '3000');
+  server.listen(port, () => {
+    console.log(`\n🌐 midou 服务已启动: http://localhost:${port}\n`);
+  });
 }
 
-app.get(
-  '/api/agent/:id/history',
-  async (req: Request, res: Response) => {
-    if (!systemManager) {
-      res.status(500).json({ error: 'System not initialized' });
-      return;
-    }
-
-    const agentId = req.params.id as string;
-    let agent;
-
-    if (
-      agentId &&
-      agentId !== 'null' &&
-      agentId !== 'undefined'
-    ) {
-      agent = systemManager.agents.get(agentId);
-    } else {
-      agent = systemManager.agents.values().next().value;
-    }
-
-    if (!agent) {
-      res.status(404).json({ error: 'Agent not found' });
-      return;
-    }
-
-    let messages: HistoryMessage[] = [];
-
-    try {
-      // 1. Get recent memories from logs (last 1 day)
-      let recentLogs = await getRecentMemories(1, agent.name);
-
-      // 2. Get current session messages (including tool call details)
-      const sessionMessages: HistoryMessage[] = [];
-      if (agent.engine && agent.engine.session) {
-        const rawMessages: ChatMessage[] = agent.engine.session
-          .getMessages()
-          .filter(
-            (m: ChatMessage) =>
-              m.role === 'user' ||
-              m.role === 'assistant' ||
-              m.role === 'tool'
-          );
-
-        for (const m of rawMessages) {
-          if (m.role === 'user') {
-            if (m.content && m.content.trim()) {
-              sessionMessages.push({
-                role: 'user',
-                agent: 'You',
-                content: m.content,
-              });
-            }
-          } else if (m.role === 'assistant') {
-            let content = m.content || '';
-            if (m.tool_calls && m.tool_calls.length > 0) {
-              const toolInfo = m.tool_calls
-                .map((tc) => {
-                  let argsStr = '';
-                  try {
-                    const parsed =
-                      typeof tc.function.arguments === 'string'
-                        ? JSON.parse(tc.function.arguments)
-                        : tc.function.arguments;
-                    argsStr = Object.entries(parsed as Record<string, unknown>)
-                      .map(
-                        ([k, v]) =>
-                          `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`
-                      )
-                      .join(', ');
-                  } catch {
-                    argsStr = tc.function.arguments || '';
-                  }
-                  return `> 🔧 **${tc.function.name}**(${argsStr})`;
-                })
-                .join('\n');
-              content = content
-                ? content + '\n\n' + toolInfo
-                : toolInfo;
-            }
-            if (content.trim()) {
-              sessionMessages.push({
-                role: 'assistant',
-                agent: agent.name,
-                content,
-              });
-            }
-          } else if (m.role === 'tool') {
-            const truncated =
-              (m.content || '').length > 200
-                ? m.content!.slice(0, 200) + '...'
-                : m.content || '';
-            sessionMessages.push({
-              role: 'assistant',
-              agent: agent.name,
-              content: `<details><summary>📎 工具返回结果</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n\n</details>`,
-            });
-          }
-        }
-      }
-
-      // 3. Deduplicate
-      if (recentLogs && sessionMessages.length > 0) {
-        const escapeRegExp = (str: string): string =>
-          str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        for (let i = 0; i < sessionMessages.length; i++) {
-          if (sessionMessages[i].role === 'user') {
-            const userMsg = sessionMessages[i].content;
-            let astMsg = '';
-            if (
-              i + 1 < sessionMessages.length &&
-              sessionMessages[i + 1].role === 'assistant'
-            ) {
-              astMsg = sessionMessages[i + 1].content;
-            }
-            if (userMsg && astMsg) {
-              const pattern = new RegExp(
-                `### \\d{2}:\\d{2}\\n\\n\\*\\*用户\\*\\*: ${escapeRegExp(userMsg)}\\n\\n\\*\\*${escapeRegExp(agent.name)}\\*\\*: ${escapeRegExp(astMsg)}\\n*`,
-                'g'
-              );
-              recentLogs = recentLogs.replace(pattern, '');
-            }
-          }
-        }
-        recentLogs = recentLogs.trim();
-      }
-
-      if (recentLogs && recentLogs !== '') {
-        messages.push({
-          role: 'system',
-          agent: 'System',
-          content: `**[历史日志记录]**\n\n${recentLogs}`,
-        });
-      }
-
-      messages = [...messages, ...sessionMessages];
-    } catch (err) {
-      console.error('Failed to load history:', err);
-    }
-
-    res.json({ messages });
-  }
-);
-
-// API Routes for TODOs
-app.get(
-  '/api/todos',
-  async (_req: Request, res: Response) => {
-    try {
-      const todos = await getTodoItems();
-      res.json(todos);
-    } catch (err: unknown) {
-      res
-        .status(500)
-        .json({ error: (err as Error).message });
-    }
-  }
-);
-
-app.post(
-  '/api/todos',
-  async (req: Request, res: Response) => {
-    try {
-      const { agentId, title, description } = req.body;
-      if (!agentId || !title) {
-        res
-          .status(400)
-          .json({ error: 'agentId and title are required' });
-        return;
-      }
-      const newTodo = await addTodoItem(agentId, title, description);
-      res.json(newTodo);
-    } catch (err: unknown) {
-      res
-        .status(500)
-        .json({ error: (err as Error).message });
-    }
-  }
-);
-
-app.put(
-  '/api/todos/:id',
-  async (req: Request, res: Response) => {
-    try {
-      const updated = await updateTodoStatus(
-        req.params.id as string,
-        req.body
-      );
-      if (updated) {
-        res.json(updated);
-      } else {
-        res.status(404).json({ error: 'Todo not found' });
-      }
-    } catch (err: unknown) {
-      res
-        .status(500)
-        .json({ error: (err as Error).message });
-    }
-  }
-);
-
-app.delete(
-  '/api/todos/:id',
-  async (req: Request, res: Response) => {
-    try {
-      const success = await deleteTodoItem(req.params.id as string);
-      if (success) {
-        res.json({ success: true });
-      } else {
-        res.status(404).json({ error: 'Todo not found' });
-      }
-    } catch (err: unknown) {
-      res
-        .status(500)
-        .json({ error: (err as Error).message });
-    }
-  }
-);
-
-const PORT = process.env.PORT || 3000;
-
-bootstrap()
-  .then(() => {
-    httpServer.listen(PORT, () => {
-      console.log(`Midou backend listening on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('Failed to start backend:', err);
-    process.exit(1);
-  });
-
-// Catch-all route for Vue Router
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.path.startsWith('/api/')) {
-    return next();
-  }
-  res.sendFile(
-    path.join(MIDOU_PKG, 'web/dist/index.html')
-  );
-});
-
+// 优雅关机
 process.on('SIGINT', async () => {
-  console.log('\nShutting down...');
-  if (systemManager) {
-    systemManager.stopAllCronJobs();
-  }
-  await disconnectMCP();
-  await shutdownRAG();
+  console.log('\n正在关闭...');
+  if (systemManager) await systemManager.shutdown();
   process.exit(0);
 });
+
+process.on('SIGTERM', async () => {
+  if (systemManager) await systemManager.shutdown();
+  process.exit(0);
+});
+
+main().catch((err) => {
+  console.error('启动失败:', err);
+  process.exit(1);
+});
+
+export { app, io, systemManager };

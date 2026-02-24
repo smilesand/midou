@@ -145,6 +145,38 @@ export interface MemoryMetadata {
   connections: string;
 }
 
+/**
+ * 记忆提供者接口 — 所有记忆系统实现必须遵守此契约
+ */
+export interface MemoryProvider {
+  /** 提供者名称 */
+  readonly name: string;
+
+  /** 初始化提供者 */
+  init(): Promise<void>;
+
+  /** 关闭提供者 */
+  shutdown(): Promise<void>;
+
+  /** 存入记忆 */
+  addMemory(
+    agentId: string,
+    content: string,
+    type: string,
+    importance: number
+  ): Promise<string>;
+
+  /** 搜索记忆 */
+  searchMemory(
+    agentId: string,
+    query: string,
+    limit: number
+  ): Promise<MemoryResult[]>;
+
+  /** 清理旧记忆 */
+  cleanup(daysOld: number, maxImportanceToForget: number): Promise<number>;
+}
+
 // ── 系统配置 ──
 
 export interface SystemConfig {
@@ -177,14 +209,8 @@ export interface MidouAppConfig {
     model: string;
     temperature: number;
     maxTokens: number;
-    anthropic: {
-      baseURL: string;
-      apiKey: string;
-    };
-    openai: {
-      baseURL: string;
-      apiKey: string;
-    };
+    apiKey: string;
+    apiBase: string;
   };
   workspace: {
     root: string;
@@ -199,6 +225,17 @@ export interface PluginContext {
   systemManager: SystemManagerInterface;
   app: Express;
   registerTool: (definition: ToolDefinition, handler: ToolHandler) => void;
+  registerMemoryProvider: (provider: MemoryProvider) => void;
+
+  // ── LLM 依赖注入 ──
+  /** 创建 LLM 实例（用于 embed、chat 等高级操作） */
+  createLLM: (options?: LLMConfig) => unknown;
+  /** 简单的一问一答 LLM 调用 */
+  quickAsk: (prompt: string, systemPrompt?: string, llmConfig?: LLMConfig) => Promise<string>;
+
+  // ── 配置信息 ──
+  /** 工作空间根目录 */
+  workspaceDir: string;
 }
 
 export type ToolHandler = (

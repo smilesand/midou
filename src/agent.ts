@@ -1,238 +1,195 @@
+/**
+ * Agent — midou 的智能体抽象层
+ *
+ * 每个 Agent 拥有独立的身份、记忆、工具集和对话引擎。
+ * Agent 是系统中的基本工作单元，可以独立运行或协作完成任务。
+ */
+
 import path from 'path';
 import fs from 'fs/promises';
 import { ChatEngine } from './chat.js';
-import { buildSkillsPrompt } from './skills.js';
-import { logConversation } from './memory.js';
-import { addEpisodicMemory, searchMemory } from './rag/index.js';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
 import type {
   AgentConfig,
   AgentData,
+  AgentInterface,
+  ChatEngineInterface,
   OutputHandler,
-  LLMConfig,
   SystemManagerInterface,
 } from './types.js';
 
-export class Agent {
+// ── 默认输出处理器 ──
+
+function createConsoleOutputHandler(agentName: string): OutputHandler {
+  let textBuffer = '';
+  return {
+    onThinkingStart: () => {},
+    onThinkingDelta: () => {},
+    onThinkingEnd: () => {},
+    onThinkingHidden: () => {},
+    onTextDelta: (text: string) => {
+      textBuffer += text;
+    },
+    onTextPartComplete: () => {
+      if (textBuffer) {
+        console.log(`[${agentName}] ${textBuffer}`);
+        textBuffer = '';
+      }
+    },
+    onTextComplete: () => {},
+    onToolStart: (name: string) => {
+      console.log(`[${agentName}] 🔧 ${name}...`);
+    },
+    onToolEnd: (name: string) => {
+      console.log(`[${agentName}] ✓ ${name} 完成`);
+    },
+    onToolExec: () => {},
+    onToolResult: () => {},
+    onError: (msg: string) => {
+      console.error(`[${agentName}] ❌ ${msg}`);
+    },
+    confirmCommand: async () => true,
+  };
+}
+
+/**
+ * Agent 类
+ */
+export class Agent implements AgentInterface {
   id: string;
   name: string;
   config: AgentData;
-  systemManager: SystemManagerInterface;
   workspaceDir: string;
-  engine: ChatEngine | null;
+  engine: ChatEngineInterface | null;
   isBusy: boolean;
-  messageQueue: string[];
-  private _currentText: string;
 
-  constructor(agentConfig: AgentConfig, systemManager: SystemManagerInterface) {
+  private _messageQueue: Array<{ from: string; content: string; ts: number }>;
+  private _systemManager: SystemManagerInterface | null;
+
+  constructor(
+    agentConfig: AgentConfig,
+    systemManager: SystemManagerInterface | null = null
+  ) {
     this.id = agentConfig.id;
-    this.name = agentConfig.name || 'Agent';
+    this.name = agentConfig.name;
     this.config = agentConfig.data || agentConfig.config || {};
-    this.systemManager = systemManager;
-    this.workspaceDir = path.join(
-      MIDOU_WORKSPACE_DIR,
-      'agents',
-      this.name
-    );
+    this.workspaceDir = path.join(MIDOU_WORKSPACE_DIR, 'agents', this.id);
     this.engine = null;
     this.isBusy = false;
-    this.messageQueue = [];
-    this._currentText = '';
+    this._messageQueue = [];
+    this._systemManager = systemManager;
   }
 
+  /**
+   * 初始化 Agent — 创建工作目录和对话引擎
+   */
   async init(): Promise<void> {
+    // 确保工作目录
     await fs.mkdir(this.workspaceDir, { recursive: true });
+    await fs.mkdir(path.join(this.workspaceDir, 'memory'), { recursive: true });
 
-    let systemPrompt =
-      this.config.systemPrompt ||
-      `You are ${this.name}, an AI assistant.`;
-
-    const skillsPrompt = await buildSkillsPrompt();
-    if (skillsPrompt) {
-      systemPrompt += `\n\n=== 你的技能 ===\n${skillsPrompt}`;
-    }
-
-    const roster = this.systemManager.getOrganizationRoster(this.id);
-    if (roster) {
-      systemPrompt += `\n\n=== 组织花名册 ===\n${roster}\n注意：你只能通过 send_message 工具向组织花名册中列出的其他用户发送消息。`;
-    }
-
-    try {
-      const soulPath = path.join(MIDOU_WORKSPACE_DIR, 'SOUL.md');
-      const soulContent = await fs.readFile(soulPath, 'utf-8');
-      if (soulContent) {
-        systemPrompt += `\n\n=== 核心准则 (SOUL) ===\n${soulContent}`;
-      }
-    } catch (_error) {
-      // Ignore if SOUL.md doesn't exist
-    }
-
-    if (this.config.isAgentMode !== false) {
-      systemPrompt += `\n\n=== 工作流准则 ===
-1. **环境感知**：你可以通过工具获取环境信息、用户输入和记忆来感知当前情境。始终保持对上下文的敏感，确保你的行为与当前情境相关。
-2. **工具优先**：在执行任何操作之前，首先考虑是否需要调用工具来获取信息、执行任务或与用户交互。工具是你完成任务的关键手段，如果没有合适的工具，就使用现有的工具来创造工具。
-3. **保持专注**：始终围绕用户的目标和任务进行思考和行动。避免偏离主题或执行与当前任务无关的操作。
-4. **利用记忆**：如果需要更多上下文信息，请使用 \`search_memory\` 工具在知识库中搜索，或使用 \`read_agent_log\` 查找日志。
-5. **主动记忆**：当你学到新的重要知识、完成重要任务或发现用户偏好时，主动使用 \`add_memory\` 工具将其存入知识库。`;
-    }
-
-    const llmConfig: LLMConfig = {
-      provider: this.config.provider || undefined,
-      model: this.config.model || undefined,
-      apiKey: this.config.apiKey || undefined,
-      baseURL: this.config.baseURL || undefined,
-      maxTokens: this.config.maxTokens
-        ? parseInt(String(this.config.maxTokens), 10)
-        : undefined,
-    };
-
-    try {
-      const hotMemories = await searchMemory(this.id, this.name, 5);
-      if (hotMemories && hotMemories.length > 0) {
-        const memoryContext = hotMemories
-          .map((m, i) => `${i + 1}. ${m.content}`)
-          .join('\n');
-        systemPrompt += `\n\n=== 你的重要记忆 ===\n以下是你记忆中比较重要的信息，请在需要时参考：\n${memoryContext}`;
-        console.log(
-          `[Agent ${this.name}] 已加载 ${hotMemories.length} 条热门记忆。`
-        );
-      }
-    } catch (err: unknown) {
-      console.log(
-        `[Agent ${this.name}] 加载热门记忆失败 (可能尚无记忆):`,
-        (err as Error).message
-      );
-    }
-
-    const isAgentMode = this.config.isAgentMode !== false;
-    const maxIterations = this.config.maxIterations
-      ? parseInt(String(this.config.maxIterations), 10)
-      : undefined;
-
+    // 创建对话引擎
     this.engine = new ChatEngine(
-      systemPrompt,
-      null,
-      llmConfig,
-      this.systemManager,
-      isAgentMode,
       this.id,
-      maxIterations ?? null
+      this.name,
+      this.config,
+      this._systemManager
     );
 
-    const baseOutputHandler = this.createBaseOutputHandler();
-    const finalOutputHandler = this.systemManager.buildOutputHandler
-      ? this.systemManager.buildOutputHandler(this, baseOutputHandler)
-      : baseOutputHandler;
+    // 设置默认输出处理器
+    this.engine.setOutputHandler(createConsoleOutputHandler(this.name));
 
-    this.engine.setOutputHandler(finalOutputHandler);
+    console.log(`[Agent] ${this.name} (${this.id}) 已初始化`);
   }
 
-  createBaseOutputHandler(): OutputHandler {
-    return {
-      onThinkingStart: () =>
-        this.systemManager.emitEvent('thinking_start', {
-          agentId: this.id,
-        }),
-      onThinkingDelta: (text: string) =>
-        this.systemManager.emitEvent('thinking_delta', {
-          agentId: this.id,
-          text,
-        }),
-      onThinkingEnd: (fullText: string) =>
-        this.systemManager.emitEvent('thinking_end', {
-          agentId: this.id,
-          fullText,
-        }),
-      onThinkingHidden: (length: number) =>
-        this.systemManager.emitEvent('thinking_hidden', {
-          agentId: this.id,
-          length,
-        }),
-      onTextDelta: (text: string) => {
-        if (!this._currentText) this._currentText = '';
-        this._currentText += text;
-        this.systemManager.emitEvent('message_delta', {
-          agentId: this.id,
-          text,
-        });
-      },
-      onTextPartComplete: () => {},
-      onTextComplete: (truncated: boolean) => {
-        const fullText = this._currentText || '';
-        this.systemManager.emitEvent('message_end', {
-          agentId: this.id,
-          fullText,
-          truncated,
-        });
-        this._currentText = '';
-      },
-      onToolStart: (name: string) =>
-        this.systemManager.emitEvent('tool_start', {
-          agentId: this.id,
-          name,
-        }),
-      onToolEnd: (name: string, input: unknown) =>
-        this.systemManager.emitEvent('tool_end', {
-          agentId: this.id,
-          name,
-          input,
-        }),
-      onToolExec: (name: string, args: unknown) =>
-        this.systemManager.emitEvent('tool_exec', {
-          agentId: this.id,
-          name,
-          args,
-        }),
-      onToolResult: () =>
-        this.systemManager.emitEvent('tool_result', {
-          agentId: this.id,
-        }),
-      onError: (message: string) =>
-        this.systemManager.emitEvent('error', {
-          agentId: this.id,
-          message,
-        }),
-      confirmCommand: async () => true,
-    };
-  }
-
+  /**
+   * 处理消息 — 入口点
+   */
   async talk(message: string): Promise<void> {
-    this.messageQueue.push(message);
-    this._processQueue();
-  }
+    if (!this.engine) {
+      await this.init();
+    }
 
-  private async _processQueue(): Promise<void> {
-    if (this.isBusy || this.messageQueue.length === 0) return;
+    if (this.isBusy) {
+      this._messageQueue.push({
+        from: 'user',
+        content: message,
+        ts: Date.now(),
+      });
+      console.log(`[Agent] ${this.name} 正忙，消息已加入队列`);
+      return;
+    }
 
     this.isBusy = true;
-    this.systemManager.emitEvent('agent_busy', { agentId: this.id });
-
     try {
-      while (this.messageQueue.length > 0) {
-        const message = this.messageQueue.shift()!;
-        try {
-          const response = await this.engine!.talk(message);
-          await logConversation(this.name, message, response);
-          try {
-            await addEpisodicMemory(this.id, message, response);
-          } catch (memErr: unknown) {
-            console.error(
-              `[Agent ${this.name}] Failed to store episodic memory:`,
-              (memErr as Error).message
-            );
-          }
-        } catch (error: unknown) {
-          this.systemManager.emitEvent('error', {
-            agentId: this.id,
-            message: (error as Error).message,
-          });
-        }
+      // 检查消息队列中的累积消息
+      const queuedMessages = this._drainQueue();
+      let fullMessage = message;
+      if (queuedMessages.length > 0) {
+        const queuedText = queuedMessages
+          .map((q) => `[${q.from} 在你忙时发来]: ${q.content}`)
+          .join('\n');
+        fullMessage = `${queuedText}\n\n[最新消息]: ${message}`;
       }
+
+      await this.engine!.talk(fullMessage);
     } finally {
       this.isBusy = false;
-      this.systemManager.emitEvent('agent_idle', {
-        agentId: this.id,
+    }
+
+    // 处理在执行期间新加入的消息
+    if (this._messageQueue.length > 0) {
+      const next = this._messageQueue.shift()!;
+      await this.talk(next.content);
+    }
+  }
+
+  /**
+   * 接收来自其他 Agent 的消息
+   */
+  receiveMessage(fromAgentId: string, content: string): void {
+    this._messageQueue.push({
+      from: fromAgentId,
+      content,
+      ts: Date.now(),
+    });
+
+    // 如果不忙，立即处理
+    if (!this.isBusy) {
+      const msg = this._messageQueue.shift()!;
+      this.talk(msg.content).catch((err) => {
+        console.error(`[Agent] ${this.name} 处理消息失败:`, err);
       });
     }
+  }
+
+  /**
+   * 更新 Agent 配置
+   */
+  updateConfig(newConfig: Partial<AgentData>): void {
+    this.config = { ...this.config, ...newConfig };
+    if (this.engine instanceof ChatEngine) {
+      this.engine.agentData = this.config;
+      if (newConfig.systemPrompt) {
+        this.engine.systemPrompt = newConfig.systemPrompt;
+      }
+    }
+  }
+
+  /**
+   * 设置输出处理器
+   */
+  setOutputHandler(handler: OutputHandler): void {
+    if (this.engine) {
+      this.engine.setOutputHandler(handler);
+    }
+  }
+
+  // ── 私有方法 ──
+
+  private _drainQueue(): Array<{ from: string; content: string; ts: number }> {
+    const items = [...this._messageQueue];
+    this._messageQueue = [];
+    return items;
   }
 }
