@@ -6,7 +6,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { MIDOU_WORKSPACE_DIR } from './config.js';
+import { MIDOU_PLUGINS_PATH, MIDOU_WORKSPACE_DIR } from './config.js';
 import { registerTool } from './tools.js';
 import { memoryManager } from './memory.js';
 import { quickAsk, createLLMWrapper } from './llm.js';
@@ -19,7 +19,7 @@ import type {
 } from './types.js';
 import type { Express } from 'express';
 
-const PLUGINS_DIR = path.join(MIDOU_WORKSPACE_DIR, 'plugins');
+const PLUGINS_DIR = MIDOU_PLUGINS_PATH;
 
 /**
  * 扫描并加载所有插件

@@ -17,6 +17,12 @@ export const MIDOU_WORKSPACE_DIR: string =
 // 加载全局 .env
 dotenv.config({ path: path.join(MIDOU_WORKSPACE_DIR, '.env') });
 
+// MIDOU_PLUGINS_PATH — 插件目录（默认指向当前项目内置 workspace/plugins）
+export const MIDOU_PLUGINS_PATH: string =
+  process.env.MIDOU_PLUGINS_PATH
+    ? path.resolve(process.env.MIDOU_PLUGINS_PATH)
+    : path.join(MIDOU_PKG, 'workspace', 'plugins');
+
 const config: MidouAppConfig = {
   llm: {
     provider: process.env.MIDOU_PROVIDER || 'anthropic',
@@ -30,6 +36,7 @@ const config: MidouAppConfig = {
   workspace: {
     root: MIDOU_WORKSPACE_DIR,
     assets: path.join(MIDOU_WORKSPACE_DIR, 'assets'),
+    plugins: MIDOU_PLUGINS_PATH,
   },
 
   pkg: MIDOU_PKG,

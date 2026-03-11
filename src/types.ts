@@ -215,6 +215,7 @@ export interface MidouAppConfig {
   workspace: {
     root: string;
     assets: string;
+    plugins: string;
   };
   pkg: string;
 }

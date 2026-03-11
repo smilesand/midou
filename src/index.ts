@@ -6,6 +6,7 @@
 
 import express from 'express';
 import { createServer } from 'http';
+import net from 'net';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -310,7 +311,60 @@ io.on('connection', (socket) => {
 // 启动
 // ═══════════════════════════════════════════
 
+async function isPortAvailable(port: number): Promise<boolean> {
+  return await new Promise((resolve, reject) => {
+    const tester = net.createServer();
+    tester.unref();
+
+    tester.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        resolve(false);
+        return;
+      }
+      reject(err);
+    });
+
+    tester.once('listening', () => {
+      tester.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(true);
+      });
+    });
+
+    tester.listen(port);
+  });
+}
+
+async function listenServer(port: number): Promise<void> {
+  return await new Promise((resolve, reject) => {
+    const onError = (err: NodeJS.ErrnoException) => {
+      server.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port);
+  });
+}
+
 async function main(): Promise<void> {
+  const port = parseInt(process.env.MIDOU_PORT || '3000', 10);
+
+  if (!(await isPortAvailable(port))) {
+    console.error(`\n[Startup] 端口 ${port} 已被占用，后端未重复启动。`);
+    console.error('[Startup] 如果这是你之前启动的 midou 实例，可直接继续使用前端。');
+    console.error('[Startup] 如果不是，请先停止占用该端口的进程，或设置 MIDOU_PORT 后重试。\n');
+    return;
+  }
+
   console.log(`\n🎀 midou ${MIDOU_PKG}`);
   console.log(`   Provider: ${config.llm.provider}`);
   console.log(`   Model: ${config.llm.model}`);
@@ -319,10 +373,19 @@ async function main(): Promise<void> {
   systemManager = new SystemManager(io, app);
   await systemManager.loadSystem();
 
-  const port = parseInt(process.env.MIDOU_PORT || '3000');
-  server.listen(port, () => {
+  try {
+    await listenServer(port);
     console.log(`\n🌐 midou 服务已启动: http://localhost:${port}\n`);
-  });
+  } catch (err: unknown) {
+    const error = err as NodeJS.ErrnoException;
+    if (error.code === 'EADDRINUSE') {
+      console.error(`\n[Startup] 端口 ${port} 已被占用，后端未重复启动。`);
+      console.error('[Startup] 如果这是你之前启动的 midou 实例，可直接继续使用前端。');
+      console.error('[Startup] 如果不是，请先停止占用该端口的进程，或设置 MIDOU_PORT 后重试。\n');
+      return;
+    }
+    throw err;
+  }
 }
 
 // 优雅关机
