@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@huggingface/transformers": "^3.8.1",
     "@parcel/watcher": "^2.5.1",
     "cors": "^2.8.6",
     "dayjs": "^1.11.13",
