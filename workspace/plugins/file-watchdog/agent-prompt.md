@@ -3,13 +3,15 @@
 ## 数据流水线
 
 ```
-原始增量事件 → 事件分类 → 本地HF摘要 → 增量日志 → 定期Agent分析 → 05:40每日汇总
+原始增量事件 → 事件分类(支持嵌套项目) → 规则摘要(中文) → 增量日志 → 定期Agent分析 → 05:40每日汇总
 ```
 
 - 每次快照只记录**增量**（delta），不全量重复。
+- 支持 watchPath 下包含多个 Git 仓库（如 `/home/user/Code` 下有 `project-a/`, `project-b/`），每个仓库独立检测。
 - 大规模操作（npm install、yay -Scc、rm node_modules 等）自动识别并记录用户、时间、操作事件。
-- Git 操作（clone、checkout、branch、commit、fetch/pull）自动识别并记录用户、时间、分支、提交信息、diff概要。
-- 增量数据先通过 @huggingface/transformers 本地摘要，**不直接丢给大模型**。
+- Git 操作（clone、checkout、branch、commit、fetch/pull）自动识别并记录用户、时间、分支、提交信息（message）、diff概要。
+- 非批量的常规文件变更会记录具体文件名、操作类型、文件类型分布。
+- 增量数据通过规则引擎生成中文摘要，保证摘要可读且信息丰富。
 - 每 4 小时自动触发一次 Agent 分析，分析结果增量追加。
 - 每天 05:40 汇总所有分析结果，生成含图表的每日报告并推送前端。
 

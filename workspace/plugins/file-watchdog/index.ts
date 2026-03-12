@@ -157,6 +157,11 @@ let _summarizerReady = false;
 let _agentAnalysisTimer: NodeJS.Timeout | null = null;
 let _dailyCronTask: cron.ScheduledTask | null = null;
 
+// 去重：记录每个仓库上次记录 auto-fetch 的时间戳（ms），30 分钟内不重复记录
+const LAST_AUTO_FETCH_TS = new Map<string, number>();
+// 去重：记录每个任务上次写入 timeline 的摘要内容，防止内容完全相同的连续条目
+const LAST_TIMELINE_SUMMARY = new Map<string, string>();
+
 
 // ────────────────────────────── 路径工具 ──────────────────────────────
 
@@ -332,21 +337,26 @@ function classifyEvents(watchPath: string, events: WatchEventLike[]): {
   const buildArtifacts: WatchEventLike[] = [];
   const cacheCleanup: WatchEventLike[] = [];
 
-  const buildDirs = ['dist', 'build', '.next', 'coverage', '.turbo', '.cache', '__pycache__', '.tox'];
+  const buildDirs = new Set(['dist', 'build', '.next', 'coverage', '.turbo', '.cache', '__pycache__', '.tox']);
   const cacheDirs = ['.cache', '.local/share/Trash', 'yay', '.npm', '.pnpm-store'];
 
   for (const ev of events) {
     const rel = relPath(watchPath, ev.path);
     const parts = rel.split(path.sep);
-    const top = parts[0];
 
-    if (top === 'node_modules' || rel.startsWith(`node_modules${path.sep}`)) {
+    // 检查路径中任何层级是否包含特征目录（支持嵌套项目结构）
+    const hasNodeModules = parts.some(p => p === 'node_modules');
+    const hasGit = parts.some(p => p === '.git');
+    const hasBuildDir = parts.some(p => buildDirs.has(p));
+    const hasCacheDir = cacheDirs.some(d => rel.includes(d));
+
+    if (hasNodeModules) {
       nodeModules.push(ev);
-    } else if (top === '.git' || rel.startsWith(`.git${path.sep}`)) {
+    } else if (hasGit) {
       gitInternal.push(ev);
-    } else if (buildDirs.some(d => top === d || rel.startsWith(`${d}${path.sep}`))) {
+    } else if (hasBuildDir) {
       buildArtifacts.push(ev);
-    } else if (cacheDirs.some(d => rel.includes(d))) {
+    } else if (hasCacheDir) {
       cacheCleanup.push(ev);
     } else {
       regular.push(ev);
@@ -450,24 +460,58 @@ async function detectGitOperations(
 ): Promise<GitOperationEntry[]> {
   if (gitEvents.length === 0) return [];
 
-  const repoRoot = await gitRootFor(task.watchPath);
-  if (!repoRoot) return [];
+  // 按仓库分组：watchPath 下可能有多个 git 仓库子目录
+  const repoGroups = new Map<string, WatchEventLike[]>();
+  for (const ev of gitEvents) {
+    const rel = relPath(task.watchPath, ev.path);
+    const parts = rel.split(path.sep);
+    const gitIdx = parts.indexOf('.git');
+    if (gitIdx < 0) continue;
+    const repoAbsPath = gitIdx === 0
+      ? task.watchPath
+      : path.join(task.watchPath, ...parts.slice(0, gitIdx));
+    if (!repoGroups.has(repoAbsPath)) repoGroups.set(repoAbsPath, []);
+    repoGroups.get(repoAbsPath)!.push(ev);
+  }
 
+  const allOps: GitOperationEntry[] = [];
+  for (const [repoRoot, events] of repoGroups) {
+    const ops = await detectGitOpsForRepo(task.watchPath, repoRoot, events);
+    allOps.push(...ops);
+  }
+  return allOps;
+}
+
+/** 分析单个仓库的 git 操作 */
+async function detectGitOpsForRepo(
+  watchPath: string, repoRoot: string, events: WatchEventLike[],
+): Promise<GitOperationEntry[]> {
   const user = await getCurrentUser();
   const now = new Date().toISOString();
+  const repoName = path.relative(watchPath, repoRoot) || path.basename(repoRoot);
   const ops: GitOperationEntry[] = [];
 
-  // 分析 git 内部文件变化模式
-  const relPaths = gitEvents.map(e => path.relative(repoRoot, e.path));
+  // 分析 .git 内部文件变化模式（以 repoRoot 为基准取相对路径）
+  const gitRelPaths = events.map(e => path.relative(repoRoot, e.path));
 
-  const headChanged = relPaths.some(p => p === path.join('.git', 'HEAD'));
-  const hasPackedRefs = relPaths.some(p => p === path.join('.git', 'packed-refs'));
-  const newObjects = relPaths.filter(p => p.startsWith(path.join('.git', 'objects'))).length;
-  const refChanges = relPaths.filter(p => p.startsWith(path.join('.git', 'refs')));
-  const branchRefs = refChanges.filter(p => p.startsWith(path.join('.git', 'refs', 'heads')));
-  const remoteRefs = refChanges.filter(p => p.startsWith(path.join('.git', 'refs', 'remotes')));
+  const hasCommitEditMsg = gitRelPaths.some(p => p === path.join('.git', 'COMMIT_EDITMSG'));
+  const hasOrigHead = events.some(e =>
+    e.type === 'create' && path.relative(repoRoot, e.path) === path.join('.git', 'ORIG_HEAD'));
+  const headChanged = gitRelPaths.some(p => p === path.join('.git', 'HEAD'));
+  const hasPackedRefs = gitRelPaths.some(p => p === path.join('.git', 'packed-refs'));
+  const hasFetchHead = gitRelPaths.some(p => p === path.join('.git', 'FETCH_HEAD'));
+  const newObjects = gitRelPaths.filter(p =>
+    p.startsWith(path.join('.git', 'objects')) && !p.includes('pack')).length;
+  const packChanged = gitRelPaths.some(p =>
+    p.startsWith(path.join('.git', 'objects', 'pack')));
+  const remoteRefPaths = gitRelPaths.filter(p =>
+    p.startsWith(path.join('.git', 'refs', 'remotes')));
+  const branchRefPaths = gitRelPaths.filter(p =>
+    p.startsWith(path.join('.git', 'refs', 'heads')));
+  const logsHeadChanged = gitRelPaths.some(p =>
+    p === path.join('.git', 'logs', 'HEAD'));
 
-  // 获取当前 git 状态
+  // 获取当前分支、最近提交信息
   let currentBranch = '';
   let lastCommitHash = '';
   let lastCommitMsg = '';
@@ -476,98 +520,137 @@ async function detectGitOperations(
     currentBranch = br.stdout.trim();
   } catch { /* ignore */ }
   try {
-    const cm = await execFileAsync('git', ['-C', repoRoot, 'log', '-1', '--pretty=format:%H|||%s']);
-    const parts = cm.stdout.trim().split('|||');
-    lastCommitHash = parts[0] || '';
-    lastCommitMsg = parts[1] || '';
+    const cm = await execFileAsync('git', ['-C', repoRoot, 'log', '-1', '--pretty=format:%H|||%B']);
+    const sepIdx = cm.stdout.indexOf('|||');
+    if (sepIdx >= 0) {
+      lastCommitHash = cm.stdout.slice(0, sepIdx);
+      lastCommitMsg = cm.stdout.slice(sepIdx + 3).trim();
+    }
   } catch { /* ignore */ }
 
-  // git clone（大量 objects + packed-refs + 大量远程 refs）
-  if (newObjects > 100 && hasPackedRefs && remoteRefs.length > 0) {
+  // ── 检测规则（按优先级排列） ──
+
+  // 1. git clone（大量 objects + packed-refs + 远程 refs 创建）
+  if (newObjects > 100 && hasPackedRefs && remoteRefPaths.length > 0) {
     ops.push({
       ts: now, user, operation: 'git clone',
       branch: currentBranch,
       commitHash: lastCommitHash,
       commitMessage: lastCommitMsg,
-      details: { objectCount: newObjects, remoteRefCount: remoteRefs.length },
+      details: { repo: repoName, objectCount: newObjects, remoteRefCount: remoteRefPaths.length },
     });
     return ops;
   }
 
-  // git checkout / switch（HEAD 改变 + 分支切换）
-  if (headChanged && gitEvents.length < 100) {
+  // 2. git commit（最可靠信号：COMMIT_EDITMSG 出现 + objects 增加 + HEAD 日志更新）
+  if (hasCommitEditMsg && newObjects > 0) {
+    const diffSummary = await getGitDiffSummary(repoRoot);
     ops.push({
-      ts: now, user, operation: 'git checkout / switch',
+      ts: now, user, operation: 'git commit',
       branch: currentBranch,
       commitHash: lastCommitHash,
       commitMessage: lastCommitMsg,
+      diffSummary,
+      details: { repo: repoName, objectCount: newObjects },
     });
   }
 
-  // git fetch / pull（大量远程 refs 更新）
-  if (remoteRefs.length > 3) {
-    ops.push({
-      ts: now, user, operation: 'git fetch / pull',
-      branch: currentBranch,
-      details: { remoteRefUpdates: remoteRefs.length },
-    });
+  // 3. git pull / fetch（FETCH_HEAD 更新 + pack 或远程 refs 更新）
+  //    注意：pull = fetch + merge，可能同时有 commit 特征
+  if (hasFetchHead && (packChanged || remoteRefPaths.length > 0)) {
+    // 如果同时有 ORIG_HEAD，说明是 pull（带 merge）
+    const isPull = hasOrigHead || (logsHeadChanged && remoteRefPaths.length > 0 && branchRefPaths.length > 0);
+    const opName = isPull ? 'git pull' : 'git fetch';
+    // 避免和上面 commit 重复——如果已经记录了 commit 且是 pull，合并描述
+    const existingCommit = ops.find(o => o.operation === 'git commit');
+    if (existingCommit && isPull) {
+      existingCommit.operation = 'git pull（含合并提交）';
+      existingCommit.details = { ...existingCommit.details, remoteRefUpdates: remoteRefPaths.length };
+    } else if (!existingCommit) {
+      ops.push({
+        ts: now, user, operation: opName,
+        branch: currentBranch,
+        commitHash: lastCommitHash,
+        commitMessage: isPull ? lastCommitMsg : undefined,
+        details: { repo: repoName, remoteRefUpdates: remoteRefPaths.length },
+      });
+    }
   }
 
-  // git branch 创建/删除
+  // 收集 branch 创建/删除情况（供后续规则使用）
   const branchCreates = new Set<string>();
   const branchDeletes = new Set<string>();
-  for (const ev of gitEvents) {
+  for (const ev of events) {
     const rel = path.relative(repoRoot, ev.path);
-    if (rel.startsWith(path.join('.git', 'refs', 'heads'))) {
-      const branchName = rel.slice(path.join('.git', 'refs', 'heads').length + 1);
-      if (branchName) {
+    const prefix = path.join('.git', 'refs', 'heads') + path.sep;
+    if (rel.startsWith(prefix)) {
+      const branchName = rel.slice(prefix.length);
+      if (branchName && !branchName.includes(path.sep)) {
         if (ev.type === 'create') branchCreates.add(branchName);
         if (ev.type === 'delete') branchDeletes.add(branchName);
       }
     }
   }
+
+  // 4. git checkout / switch（HEAD 改变，但无 commit 信号）
+  //    若同时有 branch 创建/删除，合并进同一条记录，避免产生两个重复条目
+  if (headChanged && !hasCommitEditMsg && !hasFetchHead && events.length < 100) {
+    const branchDesc: string[] = [];
+    if (branchCreates.size > 0) branchDesc.push(`新建分支: ${Array.from(branchCreates).join(', ')}`);
+    if (branchDeletes.size > 0) branchDesc.push(`删除分支: ${Array.from(branchDeletes).join(', ')}`);
+    ops.push({
+      ts: now, user, operation: 'git checkout / switch',
+      branch: currentBranch,
+      commitHash: lastCommitHash,
+      commitMessage: lastCommitMsg,
+      details: {
+        repo: repoName,
+        ...(branchDesc.length > 0 ? { branchChanges: branchDesc.join('; ') } : {}),
+      },
+    });
+    // branch 事件已合并进 checkout，不再单独输出
+    branchCreates.clear();
+    branchDeletes.clear();
+  }
+
+  // 5. git branch 创建/删除（未被 checkout 合并时才单独记录）
   if (branchCreates.size > 0 || branchDeletes.size > 0) {
-    const parts: string[] = [];
-    if (branchCreates.size > 0) parts.push(`创建: ${Array.from(branchCreates).join(', ')}`);
-    if (branchDeletes.size > 0) parts.push(`删除: ${Array.from(branchDeletes).join(', ')}`);
+    const desc: string[] = [];
+    if (branchCreates.size > 0) desc.push(`创建: ${Array.from(branchCreates).join(', ')}`);
+    if (branchDeletes.size > 0) desc.push(`删除: ${Array.from(branchDeletes).join(', ')}`);
     ops.push({
-      ts: now, user, operation: `git branch ${parts.join('; ')}`,
+      ts: now, user, operation: `git branch ${desc.join('; ')}`,
       branch: currentBranch,
+      details: { repo: repoName },
     });
   }
 
-  // git commit（objects 增加 + 非 clone 场景）
-  if (newObjects > 0 && newObjects <= 100 && !headChanged && ops.length === 0) {
-    const diffSummary = await getGitDiffSummary(repoRoot);
-    ops.push({
-      ts: now, user, operation: 'git commit',
-      branch: currentBranch,
-      commitHash: lastCommitHash,
-      commitMessage: lastCommitMsg,
-      diffSummary,
-    });
+  // 6. 仅有 FETCH_HEAD 更新（自动 fetch / cron 任务）
+  //    30 分钟内同一仓库的 auto-fetch 不重复记录
+  if (ops.length === 0 && hasFetchHead && events.length <= 3) {
+    const autoFetchKey = repoRoot;
+    const lastTs = LAST_AUTO_FETCH_TS.get(autoFetchKey) ?? 0;
+    const now30MinAgo = Date.now() - 30 * 60 * 1000;
+    if (lastTs < now30MinAgo) {
+      LAST_AUTO_FETCH_TS.set(autoFetchKey, Date.now());
+      ops.push({
+        ts: now, user, operation: 'git fetch（自动/定时）',
+        branch: currentBranch,
+        details: { repo: repoName, eventCount: events.length },
+      });
+    }
+    // 若在 30 分钟内已记录过，返回空（不产生新条目）
   }
 
-  // 如果 HEAD 改变且有 objects 增加，更像是 commit
-  if (headChanged && newObjects > 0 && newObjects <= 100 && ops.length === 0) {
-    const diffSummary = await getGitDiffSummary(repoRoot);
-    ops.push({
-      ts: now, user, operation: 'git commit',
-      branch: currentBranch,
-      commitHash: lastCommitHash,
-      commitMessage: lastCommitMsg,
-      diffSummary,
-    });
-  }
-
-  // 兜底 — 有 git 变化但未归类
-  if (ops.length === 0 && gitEvents.length > 5) {
+  // 7. 兜底 — 有 git 变化但未归类
+  if (ops.length === 0 && events.length > 5) {
     ops.push({
       ts: now, user,
-      operation: `git 元数据变更（${gitEvents.length} 文件）`,
+      operation: `git 元数据变更（${events.length} 文件）`,
       branch: currentBranch,
       commitHash: lastCommitHash,
       commitMessage: lastCommitMsg,
+      details: { repo: repoName },
     });
   }
 
@@ -602,30 +685,84 @@ async function getGitDiffSummary(repoRoot: string): Promise<string> {
 
 // ────────────────────────────── Layer 2：本地摘要生成 ──────────────────────────────
 
+/** 生成文件类型统计 */
+function fileTypeStats(watchPath: string, events: WatchEventLike[]): string {
+  const extMap = new Map<string, number>();
+  for (const ev of events) {
+    const rel = relPath(watchPath, ev.path);
+    const ext = path.extname(rel).toLowerCase() || '(无扩展名)';
+    extMap.set(ext, (extMap.get(ext) || 0) + 1);
+  }
+  return Array.from(extMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([ext, count]) => `${ext}×${count}`)
+    .join(' ');
+}
+
 function buildRuleSummary(
   task: WatchTask,
   events: WatchEventLike[],
   classified: ReturnType<typeof classifyEvents>,
+  bulkOps: BulkOperationEntry[],
+  gitOps: GitOperationEntry[],
 ): string {
   const parts: string[] = [];
 
+  // 常规文件变更详情
   if (classified.regular.length > 0) {
-    const creates = classified.regular.filter(e => e.type === 'create').length;
-    const updates = classified.regular.filter(e => e.type === 'update').length;
-    const deletes = classified.regular.filter(e => e.type === 'delete').length;
-    const buckets = topBuckets(task.watchPath, classified.regular, 3);
-    parts.push(`常规文件变更 ${classified.regular.length} 个（+${creates} ~${updates} -${deletes}），主要在 ${buckets.join('、') || '根目录'}`);
+    const creates = classified.regular.filter(e => e.type === 'create');
+    const updates = classified.regular.filter(e => e.type === 'update');
+    const deletes = classified.regular.filter(e => e.type === 'delete');
+
+    if (classified.regular.length <= 10) {
+      // 少量文件：逐个列出
+      const fileList = classified.regular.map(e => {
+        const rel = relPath(task.watchPath, e.path);
+        const action = e.type === 'create' ? '新建' : e.type === 'update' ? '修改' : '删除';
+        return `${action} ${rel}`;
+      });
+      parts.push(`文件变更: ${fileList.join('；')}`);
+    } else {
+      // 较多文件：统计 + 目录分布 + 类型分布
+      const buckets = topBuckets(task.watchPath, classified.regular, 4);
+      const types = fileTypeStats(task.watchPath, classified.regular);
+      parts.push(`常规文件变更 ${classified.regular.length} 个（+${creates.length} ~${updates.length} -${deletes.length}），目录: ${buckets.join('、')}，类型: ${types}`);
+    }
   }
-  if (classified.nodeModules.length > 0) {
-    parts.push(`node_modules 变更 ${classified.nodeModules.length} 个（依赖操作）`);
+
+  // Git 操作信息
+  if (gitOps.length > 0) {
+    for (const op of gitOps) {
+      const info = [op.operation];
+      const repo = op.details?.repo ? `[${op.details.repo}]` : '';
+      if (op.branch) info.push(`分支 ${op.branch}`);
+      if (op.commitMessage) info.push(`"${limitText(op.commitMessage, 80)}"`);
+      if (op.diffSummary) {
+        const lastLine = op.diffSummary.split('\n').pop()?.trim();
+        if (lastLine) info.push(lastLine);
+      }
+      parts.push(`Git${repo}: ${info.join(' | ')}`);
+    }
+  } else if (classified.gitInternal.length > 0) {
+    parts.push(`.git 变更 ${classified.gitInternal.length} 个`);
   }
-  if (classified.gitInternal.length > 0) {
-    parts.push(`.git 变更 ${classified.gitInternal.length} 个（版本控制操作）`);
+
+  // 大规模操作
+  if (bulkOps.length > 0) {
+    for (const op of bulkOps) {
+      parts.push(`${op.operation}`);
+    }
   }
-  if (classified.buildArtifacts.length > 0) {
+
+  // 其他分类
+  if (classified.nodeModules.length > 0 && !bulkOps.some(o => o.kind === 'dependency_management')) {
+    parts.push(`node_modules 变更 ${classified.nodeModules.length} 个`);
+  }
+  if (classified.buildArtifacts.length > 0 && !bulkOps.some(o => o.kind === 'build_artifacts')) {
     parts.push(`构建产物变更 ${classified.buildArtifacts.length} 个`);
   }
-  if (classified.cacheCleanup.length > 0) {
+  if (classified.cacheCleanup.length > 0 && !bulkOps.some(o => o.kind === 'cache_cleanup')) {
     parts.push(`缓存变更 ${classified.cacheCleanup.length} 个`);
   }
 
@@ -644,44 +781,9 @@ async function generateLocalSummary(
 ): Promise<LocalSummaryEntry> {
   const now = new Date().toISOString();
 
-  // 拼接待摘要文本
-  const textParts: string[] = [];
-  textParts.push(`Directory: ${task.watchPath}`);
-  textParts.push(`Total changes: ${events.length} files`);
-
-  if (bulkOps.length > 0) {
-    for (const op of bulkOps) {
-      textParts.push(`Bulk operation: ${op.operation} (${op.fileCount} files) by ${op.user}`);
-    }
-  }
-  if (gitOps.length > 0) {
-    for (const op of gitOps) {
-      textParts.push(`Git: ${op.operation}, branch=${op.branch || 'unknown'}, commit=${op.commitMessage || 'N/A'}`);
-      if (op.diffSummary) {
-        textParts.push(`Diff: ${limitText(op.diffSummary, 400)}`);
-      }
-    }
-  }
-  if (classified.regular.length > 0 && classified.regular.length <= 30) {
-    const samples = classified.regular.slice(0, 15).map(e =>
-      `${e.type}: ${relPath(task.watchPath, e.path)}`
-    );
-    textParts.push(`File changes: ${samples.join('; ')}`);
-  }
-
-  const inputText = textParts.join('. ');
-
-  // 尝试 HuggingFace 本地摘要
-  let kind = 'rule_summary';
-  let summary = buildRuleSummary(task, events, classified);
-
-  const hfSummary = await localSummarize(inputText);
-  if (hfSummary) {
-    kind = 'hf_local_summary';
-    summary = hfSummary;
-  }
-
-  return { ts: now, taskId: task.id, eventCount: events.length, kind, summary };
+  // 始终使用规则摘要作为主要摘要（HF 模型对结构化日志数据效果差）
+  const summary = buildRuleSummary(task, events, classified, bulkOps, gitOps);
+  return { ts: now, taskId: task.id, eventCount: events.length, kind: 'rule_summary', summary };
 }
 
 // ────────────────────────────── Layer 3：增量日志写入 ──────────────────────────────
@@ -701,12 +803,42 @@ async function writeIncrementalLogs(
   const rawEntry: RawIncrementalEntry = {
     ts: new Date().toISOString(),
     taskId: task.id,
-    events: events.slice(0, 200).map(e => ({
+    events: events.slice(0, 500).map(e => ({
       type: e.type,
       path: relPath(task.watchPath, e.path),
     })),
   };
-  await appendJsonl(rawEventsFile(ctx, day), rawEntry);
+  // 注入分类统计和 git/bulk 操作摘要，便于后续查询
+  const rawMeta: Record<string, unknown> = {
+    ...rawEntry,
+    stats: {
+      regular: classified.regular.length,
+      git: classified.gitInternal.length,
+      nodeModules: classified.nodeModules.length,
+      build: classified.buildArtifacts.length,
+      cache: classified.cacheCleanup.length,
+    },
+  };
+  if (gitOps.length > 0) {
+    rawMeta.gitOps = gitOps.map(op => ({
+      operation: op.operation,
+      repo: op.details?.repo,
+      branch: op.branch,
+      commitHash: op.commitHash?.slice(0, 12),
+      commitMessage: op.commitMessage,
+    }));
+  }
+  if (bulkOps.length > 0) {
+    rawMeta.bulkOps = bulkOps.map(op => ({ kind: op.kind, operation: op.operation, fileCount: op.fileCount }));
+  }
+  // 常规文件变更明细（少于 30 个时逐条记录）
+  if (classified.regular.length > 0 && classified.regular.length <= 30) {
+    rawMeta.regularFiles = classified.regular.map(e => ({
+      type: e.type,
+      path: relPath(task.watchPath, e.path),
+    }));
+  }
+  await appendJsonl(rawEventsFile(ctx, day), rawMeta);
 
   // Layer 1: 大规模操作日志
   for (const op of bulkOps) {
@@ -730,23 +862,66 @@ async function writeIncrementalLogs(
     `- 事件：${events.length} 个文件变化`,
     `- 摘要：${localSummary.summary}`,
   ];
+
+  // 常规文件变更明细
+  if (classified.regular.length > 0 && classified.regular.length <= 20) {
+    timelineLines.push('- 文件变更明细：');
+    for (const ev of classified.regular) {
+      const rel = relPath(task.watchPath, ev.path);
+      const icon = ev.type === 'create' ? '🆕' : ev.type === 'update' ? '✏️' : '🗑️';
+      timelineLines.push(`  - ${icon} ${rel}`);
+    }
+  } else if (classified.regular.length > 20) {
+    const types = fileTypeStats(task.watchPath, classified.regular);
+    const buckets = topBuckets(task.watchPath, classified.regular, 5);
+    timelineLines.push(`- 文件类型分布：${types}`);
+    timelineLines.push(`- 目录分布：${buckets.join('、')}`);
+  }
+
+  // 大规模操作
   if (bulkOps.length > 0) {
     timelineLines.push('- 大规模操作：');
     for (const op of bulkOps) {
       timelineLines.push(`  - 【${op.user}】${op.operation}（${op.fileCount} 文件）`);
     }
   }
+
+  // Git 操作详情
   if (gitOps.length > 0) {
     timelineLines.push('- Git 操作：');
     for (const op of gitOps) {
-      const info = [op.operation];
+      const repo = op.details?.repo ? `[${op.details.repo}] ` : '';
+      const info = [`${repo}${op.operation}`];
       if (op.branch) info.push(`分支: ${op.branch}`);
       if (op.commitHash) info.push(`提交: ${op.commitHash.slice(0, 8)}`);
-      if (op.commitMessage) info.push(`信息: ${op.commitMessage}`);
       timelineLines.push(`  - 【${op.user}】${info.join(' | ')}`);
+      if (op.commitMessage) {
+        timelineLines.push(`    提交信息: ${op.commitMessage}`);
+      }
+      if (op.diffSummary) {
+        const diffLines = op.diffSummary.split('\n').slice(0, 10);
+        timelineLines.push('    变更统计:');
+        for (const dl of diffLines) {
+          timelineLines.push(`      ${dl}`);
+        }
+      }
     }
   }
-  await appendMarkdown(timelineFile(ctx, day), timelineLines);
+
+  // 连续重复摘要去重：若本次摘要与上次完全相同，在时间线里注记而非完整重复
+  const summaryKey = task.id;
+  const prevSummary = LAST_TIMELINE_SUMMARY.get(summaryKey);
+  if (prevSummary === localSummary.summary) {
+    // 摘要与上次相同，仅追加一行简短记录，不展开细节
+    await appendMarkdown(timelineFile(ctx, day), [
+      `### ${formatTime(now)} | ${task.id}`,
+      '',
+      `- 事件：${events.length} 个文件变化（内容与上一条相同，已省略细节）`,
+    ]);
+  } else {
+    LAST_TIMELINE_SUMMARY.set(summaryKey, localSummary.summary);
+    await appendMarkdown(timelineFile(ctx, day), timelineLines);
+  }
 }
 
 // ────────────────────────────── Layer 4：定期 Agent 分析 ──────────────────────────────
@@ -1100,6 +1275,20 @@ async function runTask(ctx: PluginContext, taskId: string): Promise<string | nul
 
     // Layer 1: Git 操作检测
     const gitOps = await detectGitOperations(ctx, task, classified.gitInternal);
+
+    // ── 过滤：跳过纯 auto-fetch 且没有任何真实文件变更的快照 ──
+    // 条件：没有常规文件变更、没有大规模操作、所有 git 操作都是 auto-fetch（或者 gitOps 为空）
+    const hasRealChanges =
+      classified.regular.length > 0 ||
+      classified.nodeModules.length > 0 ||
+      classified.buildArtifacts.length > 0 ||
+      classified.cacheCleanup.length > 0 ||
+      bulkOps.length > 0 ||
+      gitOps.some(op => !op.operation.includes('自动/定时'));
+    if (!hasRealChanges) {
+      // 什么有意义的事情都没发生，静默跳过，不写日志
+      return null;
+    }
 
     // Layer 2: 本地摘要
     const localSummary = await generateLocalSummary(ctx, task, events, classified, bulkOps, gitOps);
