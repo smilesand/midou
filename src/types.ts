@@ -26,6 +26,7 @@ export interface AgentData {
   isAgentMode?: boolean;
   cronJobs?: CronJobConfig[];
   cron?: string;
+  watchPaths?: string[];
 }
 
 export interface CronJobConfig {

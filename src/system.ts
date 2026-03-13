@@ -8,6 +8,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import cron from 'node-cron';
+import watcher from '@parcel/watcher';
 import type { Server as SocketIOServer } from 'socket.io';
 import type { Express } from 'express';
 import { Agent } from './agent.js';
@@ -31,11 +32,24 @@ const SYSTEM_CONFIG_FILE = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
 /**
  * SystemManager — 全局单例
  */
+/** 静默多少毫秒后才触发 Agent（防抖窗口） */
+const WATCHER_DEBOUNCE_MS = 5_000;
+/** 最长累积时间：即使变更持续不断，超过此值也强制触发 */
+const WATCHER_MAX_WAIT_MS = 60_000;
+
+interface WatcherPending {
+  timer: NodeJS.Timeout;
+  events: watcher.Event[];
+  firstEventAt: number;
+}
+
 export class SystemManager implements SystemManagerInterface {
   io: SocketIOServer;
   agents: Map<string, Agent>;
   connections: ConnectionConfig[];
   private _cronJobs: cron.ScheduledTask[];
+  private _watcherSubscriptions: watcher.AsyncSubscription[];
+  private _watcherPending: Map<string, WatcherPending>;
   private _app: Express;
   private _mcpServers: Record<string, MCPServerConfig>;
   outputHandlerMiddlewares: Array<(agent: AgentInterface, handler: OutputHandler) => OutputHandler | void>;
@@ -45,6 +59,8 @@ export class SystemManager implements SystemManagerInterface {
     this.agents = new Map();
     this.connections = [];
     this._cronJobs = [];
+    this._watcherSubscriptions = [];
+    this._watcherPending = new Map();
     this._app = app;
     this._mcpServers = {};
     this.outputHandlerMiddlewares = [];
@@ -84,6 +100,9 @@ export class SystemManager implements SystemManagerInterface {
 
     // 6. 设置 Cron 任务
     this._setupCronJobs();
+
+    // 7. 设置文件感知
+    await this._setupWatchPaths();
 
     console.log(
       `[System] 系统初始化完成 — ${this.agents.size} 个 Agent, ` +
@@ -255,11 +274,25 @@ export class SystemManager implements SystemManagerInterface {
   }
 
   /**
+   * 停止所有文件感知订阅
+   */
+  async stopAllWatchers(): Promise<void> {
+    // 清除所有待触发的防抖定时器
+    for (const pending of this._watcherPending.values()) {
+      clearTimeout(pending.timer);
+    }
+    this._watcherPending.clear();
+    await Promise.allSettled(this._watcherSubscriptions.map(s => s.unsubscribe()));
+    this._watcherSubscriptions = [];
+  }
+
+  /**
    * 关闭系统
    */
   async shutdown(): Promise<void> {
     console.log('[System] 正在关闭...');
     this.stopAllCronJobs();
+    await this.stopAllWatchers();
     await memoryManager.shutdown();
     await disconnectAll();
     console.log('[System] 已关闭');
@@ -336,6 +369,10 @@ export class SystemManager implements SystemManagerInterface {
     this.stopAllCronJobs();
     this._setupCronJobs();
 
+    // 重新配置文件感知
+    await this.stopAllWatchers();
+    await this._setupWatchPaths();
+
     // 保存到磁盘
     await this.saveSystem();
   }
@@ -372,6 +409,91 @@ export class SystemManager implements SystemManagerInterface {
           });
         });
         this._cronJobs.push(task);
+      }
+    }
+  }
+
+  /**
+   * 防抖调度：将新事件追加到缓冲区，在静默窗口后统一触发 Agent。
+   * 若累积时间超过最大等待时间则立即触发（应对持续变更场景）。
+   */
+  private _scheduleWatcherFlush(agent: Agent, watchPath: string, newEvents: watcher.Event[]): void {
+    const key = `${agent.id}::${watchPath}`;
+    const now = Date.now();
+
+    let pending = this._watcherPending.get(key);
+    if (!pending) {
+      pending = { timer: null!, events: [], firstEventAt: now };
+      this._watcherPending.set(key, pending);
+    }
+    pending.events.push(...newEvents);
+
+    // 超过最大累积时长 → 立即触发，不再等待静默窗口
+    if (now - pending.firstEventAt >= WATCHER_MAX_WAIT_MS) {
+      clearTimeout(pending.timer);
+      this._flushWatcherEvents(agent, watchPath);
+      return;
+    }
+
+    // 重置防抖定时器（每次新事件都重新计时）
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      this._flushWatcherEvents(agent, watchPath);
+    }, WATCHER_DEBOUNCE_MS);
+  }
+
+  private _flushWatcherEvents(agent: Agent, watchPath: string): void {
+    const key = `${agent.id}::${watchPath}`;
+    const pending = this._watcherPending.get(key);
+    if (!pending || pending.events.length === 0) return;
+
+    const events = pending.events;
+    this._watcherPending.delete(key);
+
+    const summary = events
+      .slice(0, 10)
+      .map(e => `[${e.type}] ${e.path}`)
+      .join('\n');
+    const extra = events.length > 10 ? `\n…以及另外 ${events.length - 10} 个变更` : '';
+    const message =
+      `【文件感知触发】监控路径 "${watchPath}" 在静默窗口内共检测到 ${events.length} 个文件变更：\n${summary}${extra}\n\n请根据变更内容判断是否需要采取行动。`;
+
+    console.log(`[Watcher] ${agent.name} 触发: ${events.length} 个事件 (${watchPath})`);
+    agent.talk(message).catch((e: unknown) => {
+      console.error(`[Watcher] ${agent.name} 处理文件变更失败:`, e);
+    });
+  }
+
+  private async _setupWatchPaths(): Promise<void> {
+    for (const [, agent] of this.agents) {
+      const watchPaths = agent.config.watchPaths || [];
+      for (const watchPath of watchPaths) {
+        const trimmed = watchPath.trim();
+        if (!trimmed) continue;
+
+        // 检查路径是否存在
+        try {
+          await fs.access(trimmed);
+        } catch {
+          console.warn(`[Watcher] 路径不存在，跳过: ${trimmed} (${agent.name})`);
+          continue;
+        }
+
+        try {
+          const subscription = await watcher.subscribe(trimmed, (err, events) => {
+            if (err) {
+              console.error(`[Watcher] 监听错误 (${agent.name}):`, err);
+              return;
+            }
+            if (!events || events.length === 0) return;
+            this._scheduleWatcherFlush(agent, trimmed, events);
+          });
+
+          this._watcherSubscriptions.push(subscription);
+          console.log(`[Watcher] ${agent.name} 已开始监控: ${trimmed}`);
+        } catch (err) {
+          console.error(`[Watcher] 无法订阅路径 ${trimmed} (${agent.name}):`, err);
+        }
       }
     }
   }

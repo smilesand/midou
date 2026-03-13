@@ -97,6 +97,14 @@
             <button @click="removeCronJob(index)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
           </div>
           <button @click="addCronJob" class="w-full p-2.5 bg-blue-50 text-blue-600 border border-dashed border-blue-200 rounded-md cursor-pointer font-semibold transition-all hover:bg-blue-100">+ Add Cron Job</button>
+
+          <h4 class="mt-5 mb-2.5 text-gray-500 text-sm uppercase tracking-wide">Watch Paths</h4>
+          <p class="text-xs text-gray-400 mb-2">当路径下文件发生变化时，自动触发 Agent 工作。留空则不启用。</p>
+          <div v-for="(_, index) in selectedNode.data.watchPaths" :key="index" class="flex gap-2 mb-2.5 bg-white p-2.5 rounded-md border border-gray-100">
+            <input v-model="selectedNode.data.watchPaths[index]" placeholder="/absolute/path/to/watch" class="flex-1 px-2.5 py-2 border border-gray-300 rounded box-border text-sm font-mono transition-colors focus:outline-none focus:border-blue-500" />
+            <button @click="removeWatchPath(index)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
+          </div>
+          <button @click="addWatchPath" class="w-full p-2.5 bg-blue-50 text-blue-600 border border-dashed border-blue-200 rounded-md cursor-pointer font-semibold transition-all hover:bg-blue-100">+ Add Watch Path</button>
         </div>
         <div class="p-4 bg-white border-t border-gray-200">
           <button @click="removeNode" class="w-full p-2.5 bg-red-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-red-600">Delete Agent</button>
@@ -177,6 +185,7 @@ interface AgentNodeData {
   maxTokens: number | null
   maxIterations: number | null
   cronJobs: CronJob[]
+  watchPaths: string[]
 }
 
 const { onConnect: onConnectFlow, fitView } = useVueFlow()
@@ -226,7 +235,8 @@ onMounted(async () => {
         apiKey: agent.data?.apiKey || '',
         maxTokens: agent.data?.maxTokens || null,
         maxIterations: agent.data?.maxIterations || null,
-        cronJobs: agent.data?.cronJobs || []
+        cronJobs: agent.data?.cronJobs || [],
+        watchPaths: agent.data?.watchPaths || []
       }
     }))
     
@@ -325,7 +335,8 @@ const addAgent = (): void => {
       apiKey: '',
       maxTokens: null,
       maxIterations: null,
-      cronJobs: []
+      cronJobs: [],
+      watchPaths: []
     }
   })
 }
@@ -373,6 +384,17 @@ const addCronJob = (): void => {
 
 const removeCronJob = (index: number): void => {
   selectedNode.value.data.cronJobs.splice(index, 1)
+}
+
+const addWatchPath = (): void => {
+  if (!selectedNode.value.data.watchPaths) {
+    selectedNode.value.data.watchPaths = []
+  }
+  selectedNode.value.data.watchPaths.push('')
+}
+
+const removeWatchPath = (index: number): void => {
+  selectedNode.value.data.watchPaths.splice(index, 1)
 }
 
 const removeNode = (): void => {
@@ -429,7 +451,8 @@ const getSystemData = (): Record<string, unknown> => {
         apiKey: n.data.apiKey,
         maxTokens: n.data.maxTokens,
         maxIterations: n.data.maxIterations,
-        cronJobs: n.data.cronJobs
+        cronJobs: n.data.cronJobs,
+        watchPaths: (n.data.watchPaths || []).filter((p: string) => p.trim() !== '')
       }
     })),
     connections: edges.map(e => ({
