@@ -1,15 +1,15 @@
 <template>
   <div class="flex flex-col h-full">
     <div class="p-2.5 bg-gray-100 border-b border-gray-300 flex gap-2.5">
-      <button @click="addAgent" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">Add Agent</button>
-      <button @click="layoutGraph" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">Auto Layout</button>
+      <button @click="addAgent" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">新建 Agent</button>
+      <button @click="layoutGraph" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">自动布局</button>
       <button @click="saveSystem" :disabled="isSaving" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">
-        {{ isSaving ? 'Saving...' : 'Save System' }}
+        {{ isSaving ? '保存中...' : '保存系统' }}
       </button>
-      <button @click="exportSystem" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">Export System</button>
-      <button @click="triggerImport" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">Import System</button>
+      <button @click="exportSystem" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">导出</button>
+      <button @click="triggerImport" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">导入</button>
       <input type="file" ref="fileInput" @change="importSystem" accept=".json" class="hidden" />
-      <button @click="openMcpConfig" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">Configure MCP</button>
+      <button @click="openMcpConfig" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">配置 MCP</button>
     </div>
     
     <div class="flex-1 relative flex min-h-0">
@@ -22,6 +22,8 @@
         @node-click="onNodeClick"
         @edge-click="onEdgeClick"
         @node-drag-stop="onNodeDragStop"
+        @node-context-menu="onNodeContextMenu"
+        @pane-click="closeContextMenu"
         class="flex-1 h-full"
       >
         <template #node-agent="props">
@@ -42,7 +44,7 @@
       <!-- Agent Config Panel -->
       <div v-if="selectedNode" class="absolute right-0 top-0 bottom-0 w-80 bg-gray-50 border-l border-gray-200 flex flex-col overflow-hidden box-border shadow-[-4px_0_15px_rgba(0,0,0,0.05)] z-10">
         <div class="p-4 bg-white border-b border-gray-200 flex justify-between items-center">
-          <h3 class="m-0 text-base text-gray-800">Agent Configuration</h3>
+          <h3 class="m-0 text-base text-gray-800">Agent 配置</h3>
           <button @click="selectedNode = null" class="bg-transparent border-none text-2xl leading-none text-gray-400 cursor-pointer p-0 m-0 hover:text-gray-800">×</button>
         </div>
         <div class="flex-1 p-5 overflow-y-auto">
@@ -94,7 +96,7 @@
           <div v-for="(job, index) in selectedNode.data.cronJobs" :key="index" class="flex gap-2 mb-2.5 bg-white p-2.5 rounded-md border border-gray-100">
             <input v-model="job.expression" placeholder="* * * * *" class="w-20 px-2.5 py-2 border border-gray-300 rounded box-border text-sm transition-colors focus:outline-none focus:border-blue-500" />
             <input v-model="job.prompt" placeholder="Trigger prompt" class="flex-1 px-2.5 py-2 border border-gray-300 rounded box-border text-sm transition-colors focus:outline-none focus:border-blue-500" />
-            <button @click="removeCronJob(index)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
+            <button @click="removeCronJob(index as number)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
           </div>
           <button @click="addCronJob" class="w-full p-2.5 bg-blue-50 text-blue-600 border border-dashed border-blue-200 rounded-md cursor-pointer font-semibold transition-all hover:bg-blue-100">+ Add Cron Job</button>
 
@@ -102,12 +104,13 @@
           <p class="text-xs text-gray-400 mb-2">当路径下文件发生变化时，自动触发 Agent 工作。留空则不启用。</p>
           <div v-for="(_, index) in selectedNode.data.watchPaths" :key="index" class="flex gap-2 mb-2.5 bg-white p-2.5 rounded-md border border-gray-100">
             <input v-model="selectedNode.data.watchPaths[index]" placeholder="/absolute/path/to/watch" class="flex-1 px-2.5 py-2 border border-gray-300 rounded box-border text-sm font-mono transition-colors focus:outline-none focus:border-blue-500" />
-            <button @click="removeWatchPath(index)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
+            <button @click="removeWatchPath(index as number)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
           </div>
           <button @click="addWatchPath" class="w-full p-2.5 bg-blue-50 text-blue-600 border border-dashed border-blue-200 rounded-md cursor-pointer font-semibold transition-all hover:bg-blue-100">+ Add Watch Path</button>
         </div>
-        <div class="p-4 bg-white border-t border-gray-200">
-          <button @click="removeNode" class="w-full p-2.5 bg-red-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-red-600">Delete Agent</button>
+        <div class="p-4 bg-white border-t border-gray-200 flex gap-2">
+          <button @click="saveSystem" :disabled="isSaving" class="flex-1 p-2.5 bg-green-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-green-600 disabled:bg-gray-300">{{ isSaving ? '保存中...' : '保存' }}</button>
+          <button @click="removeNode" class="flex-1 p-2.5 bg-red-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-red-600">删除 Agent</button>
         </div>
       </div>
 
@@ -131,8 +134,20 @@
           </div>
         </div>
         <div class="p-4 bg-white border-t border-gray-200">
-          <button @click="removeEdge" class="w-full p-2.5 bg-red-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-red-600">Delete Connection</button>
+          <button @click="removeEdge" class="w-full p-2.5 bg-red-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-red-600">删除连接</button>
         </div>
+      </div>
+
+      <!-- Right-click Context Menu -->
+      <div
+        v-if="contextMenu.visible"
+        class="fixed z-[2000] bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[140px]"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+      >
+        <button
+          @click="duplicateAgent"
+          class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 cursor-pointer border-none bg-transparent"
+        >📋 复制 Agent</button>
       </div>
 
       <!-- MCP Config Modal -->
@@ -201,6 +216,8 @@ const mcpServersJson = ref('{}')
 const mcpJsonError = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 
+const contextMenu = ref({ visible: false, x: 0, y: 0, nodeId: '' })
+
 const selectedEdgeLabel = computed((): string => {
   if (!selectedEdge.value) return ''
   const sourceNode = elements.value.find((n: any) => n.id === selectedEdge.value!.source)
@@ -213,6 +230,8 @@ const selectedEdgeLabel = computed((): string => {
 let nodeId = 1
 
 onMounted(async () => {
+  document.addEventListener('click', closeContextMenu)
+
   try {
     const response = await fetch('/api/system')
     if (!response.ok) {
@@ -346,6 +365,53 @@ const onConnect = (params: any): void => {
   params.data = { conditions: [] }
   params.markerEnd = MarkerType.ArrowClosed
   elements.value.push(params)
+}
+
+const onNodeContextMenu = (event: any): void => {
+  event.event.preventDefault()
+  selectedEdge.value = null
+  const node = elements.value.find(n => n.id === event.node.id)
+  selectedNode.value = node || null
+  contextMenu.value = {
+    visible: true,
+    x: event.event.clientX,
+    y: event.event.clientY,
+    nodeId: event.node.id
+  }
+}
+
+const closeContextMenu = (): void => {
+  contextMenu.value.visible = false
+}
+
+const duplicateAgent = (): void => {
+  const source = elements.value.find(n => n.id === contextMenu.value.nodeId)
+  closeContextMenu()
+  if (!source) return
+
+  const newId = `agent-${nodeId++}`
+  const newNode = {
+    id: newId,
+    type: 'agent',
+    label: `${source.data.name} (副本)`,
+    position: { x: (source.position?.x ?? 0) + 40, y: (source.position?.y ?? 0) + 40 },
+    data: {
+      name: `${source.data.name} (副本)`,
+      isAgentMode: source.data.isAgentMode,
+      systemPrompt: source.data.systemPrompt,
+      provider: source.data.provider,
+      model: source.data.model,
+      baseURL: source.data.baseURL,
+      apiKey: source.data.apiKey,
+      maxTokens: source.data.maxTokens,
+      maxIterations: source.data.maxIterations,
+      cronJobs: JSON.parse(JSON.stringify(source.data.cronJobs || [])),
+      watchPaths: JSON.parse(JSON.stringify(source.data.watchPaths || []))
+    }
+  }
+  elements.value.push(newNode)
+  // 自动选中副本节点以便立即修改
+  selectedNode.value = newNode
 }
 
 const onNodeClick = (event: any): void => {
