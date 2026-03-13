@@ -1469,28 +1469,120 @@ async function restoreTasks(ctx: PluginContext): Promise<void> {
 }
 
 async function getTodayReport(ctx: PluginContext): Promise<string> {
-  const day = formatDay(new Date());
-  const reportPath = dailyReportFile(ctx, day);
-  if (await fileExists(reportPath)) {
-    return await fs.readFile(reportPath, 'utf-8');
-  }
-  const tlPath = timelineFile(ctx, day);
-  if (await fileExists(tlPath)) {
-    return `# 今日监控时间线（${day}）\n\n` + await fs.readFile(tlPath, 'utf-8');
-  }
-  return `今日（${day}）暂无监控数据`;
+  return getReportByDate(ctx, formatDay(new Date()));
 }
 
-async function getReportByDate(ctx: PluginContext, date: string): Promise<string> {
+async function getReportByDate(ctx: PluginContext, date: string, section?: string): Promise<string> {
+  // 已生成的每日报告（LLM 汇总版）
   const reportPath = dailyReportFile(ctx, date);
   if (await fileExists(reportPath)) {
-    return await fs.readFile(reportPath, 'utf-8');
+    const content = await fs.readFile(reportPath, 'utf-8');
+    // 若超过 8000 字符截断并提示
+    if (content.length > 8000) {
+      return content.slice(0, 8000) + '\n\n…（报告过长已截断，请使用 watchdog_generate_daily_report 重新生成或指定 section 参数浏览分段）';
+    }
+    return content;
   }
-  const tlPath = timelineFile(ctx, date);
-  if (await fileExists(tlPath)) {
-    return `# 监控时间线（${date}）\n\n` + await fs.readFile(tlPath, 'utf-8');
+
+  // 无预生成报告时，构建紧凑摘要（不直接返回 timeline.md 原文）
+  return buildCompactSummary(ctx, date, section);
+}
+
+/** 构建紧凑日报摘要，用于无 daily-report.md 时的 get_report 响应 */
+async function buildCompactSummary(ctx: PluginContext, date: string, section?: string): Promise<string> {
+  const summaries = await readJsonl<LocalSummaryEntry>(localSummaryFile(ctx, date));
+  const bulkOps = await readJsonl<BulkOperationEntry>(bulkOpsFile(ctx, date));
+  const gitOps = await readJsonl<GitOperationEntry>(gitOpsFile(ctx, date));
+  const agentReports = await readJsonl<AgentReportSection>(agentReportsFile(ctx, date));
+
+  if (summaries.length === 0 && bulkOps.length === 0 && gitOps.length === 0) {
+    return `${date} 暂无监控数据`;
   }
-  return `${date} 无监控数据`;
+
+  const totalEvents = summaries.reduce((s, e) => s + e.eventCount, 0);
+  const lines: string[] = [];
+
+  // ── 概览 ──
+  if (!section || section === 'overview' || section === 'all') {
+    lines.push(`# 📋 ${date} 工作监控摘要`);
+    lines.push('');
+    lines.push(`| 指标 | 值 |`);
+    lines.push(`|------|-----|`);
+    lines.push(`| 监控快照次数 | ${summaries.length} |`);
+    lines.push(`| 累计文件变更 | ${totalEvents} |`);
+    lines.push(`| 大规模操作 | ${bulkOps.length} |`);
+    lines.push(`| Git 操作 | ${gitOps.length} |`);
+    lines.push('');
+  }
+
+  // ── Git 操作（最核心，优先展示） ──
+  if ((!section || section === 'git' || section === 'all') && gitOps.length > 0) {
+    lines.push('## 🔀 Git 操作');
+    lines.push('');
+    for (const op of gitOps) {
+      const t = formatDateTime(new Date(op.ts));
+      const repo = op.details?.repo ? `[${op.details.repo}]` : '';
+      const parts = [`**${t}**`, `${repo} ${op.operation}`];
+      if (op.branch) parts.push(`分支: \`${op.branch}\``);
+      if (op.commitHash) parts.push(`提交: \`${op.commitHash.slice(0, 8)}\``);
+      lines.push(`- ${parts.join(' | ')}`);
+      if (op.commitMessage) lines.push(`  > ${op.commitMessage}`);
+      if (op.diffSummary) {
+        const lastLine = op.diffSummary.split('\n').pop()?.trim();
+        if (lastLine) lines.push(`  变更统计: ${lastLine}`);
+      }
+    }
+    lines.push('');
+  }
+
+  // ── 大规模操作 ──
+  if ((!section || section === 'bulk' || section === 'all') && bulkOps.length > 0) {
+    lines.push('## 🔧 大规模操作');
+    lines.push('');
+    for (const op of bulkOps) {
+      const t = formatDateTime(new Date(op.ts));
+      lines.push(`- **${t}** 👤${op.user} — ${op.operation}（${op.fileCount} 文件）`);
+    }
+    lines.push('');
+  }
+
+  // ── 活动时间线（摘要版，最近 20 条） ──
+  if ((!section || section === 'timeline' || section === 'all') && summaries.length > 0) {
+    const recent = summaries.slice(-20);
+    lines.push(`## 📝 活动时间线（最近 ${recent.length} 条，共 ${summaries.length} 条）`);
+    lines.push('');
+    for (const s of recent) {
+      const t = formatDateTime(new Date(s.ts));
+      lines.push(`- **${t}** — ${s.summary}`);
+    }
+    if (summaries.length > 20) {
+      lines.push(`- …（还有 ${summaries.length - 20} 条更早记录，可指定 section=timeline 查看）`);
+    }
+    lines.push('');
+  }
+
+  // ── Agent 分析摘要 ──
+  if ((!section || section === 'analysis' || section === 'all') && agentReports.length > 0) {
+    const lastReport = agentReports[agentReports.length - 1];
+    lines.push('## 🤖 最新 Agent 分析');
+    lines.push('');
+    lines.push(`> 时段: ${lastReport.period}`);
+    lines.push('');
+    // 截取前 2000 字符
+    const preview = lastReport.content.slice(0, 2000);
+    lines.push(preview);
+    if (lastReport.content.length > 2000) {
+      lines.push('\n…（分析内容过长已截断，请使用 watchdog_trigger_analysis 触发新分析）');
+    }
+    lines.push('');
+  }
+
+  const result = lines.join('\n');
+  // 最终安全截断
+  if (result.length > 10000) {
+    return result.slice(0, 10000) + '\n\n…（内容过长，请指定 section 参数查看: overview / git / bulk / timeline / analysis）';
+  }
+  return result;
 }
 
 // ────────────────────────────── 插件导出 ──────────────────────────────
@@ -1630,11 +1722,16 @@ export default {
         type: 'function',
         function: {
           name: 'watchdog_get_report',
-          description: '获取指定日期的监控报告，默认获取今日报告',
+          description: '获取指定日期的工作监控报告（紧凑摘要格式，不会超出长度限制）。包含 Git 操作、大规模操作、活动时间线、Agent 分析。默认获取今日报告。如需查看特定分段可指定 section 参数。',
           parameters: {
             type: 'object',
             properties: {
               date: { type: 'string', description: '日期（YYYY-MM-DD 格式，默认今天）' },
+              section: {
+                type: 'string',
+                description: '查看特定分段：overview（概览）/ git（Git操作）/ bulk（大规模操作）/ timeline（活动时间线）/ analysis（Agent分析）/ all（全部）。默认 all',
+                enum: ['overview', 'git', 'bulk', 'timeline', 'analysis', 'all'],
+              },
             },
             required: [],
           },
@@ -1644,7 +1741,8 @@ export default {
         const date = typeof args.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.date)
           ? args.date
           : formatDay(new Date());
-        return getReportByDate(ctx, date);
+        const section = typeof args.section === 'string' ? args.section : undefined;
+        return getReportByDate(ctx, date, section);
       },
     );
 
