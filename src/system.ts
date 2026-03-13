@@ -15,6 +15,7 @@ import { Agent } from './agent.js';
 import { initMemory, memoryManager } from './memory.js';
 import { connectMCPServers, disconnectAll, getMCPToolDefinitions } from './mcp.js';
 import { loadPlugins } from './plugin.js';
+import { PipelineEngine } from './pipeline.js';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
 import type {
   AgentConfig,
@@ -25,6 +26,8 @@ import type {
   OutputHandler,
   SystemManagerInterface,
   SystemConfig,
+  PipelineDefinition,
+  PipelineEngineInterface,
 } from './types.js';
 
 const SYSTEM_CONFIG_FILE = path.join(MIDOU_WORKSPACE_DIR, 'system.json');
@@ -47,6 +50,8 @@ export class SystemManager implements SystemManagerInterface {
   io: SocketIOServer;
   agents: Map<string, Agent>;
   connections: ConnectionConfig[];
+  pipelines: PipelineDefinition[];
+  pipelineEngine: PipelineEngine | null;
   private _cronJobs: cron.ScheduledTask[];
   private _watcherSubscriptions: watcher.AsyncSubscription[];
   private _watcherPending: Map<string, WatcherPending>;
@@ -58,6 +63,8 @@ export class SystemManager implements SystemManagerInterface {
     this.io = io;
     this.agents = new Map();
     this.connections = [];
+    this.pipelines = [];
+    this.pipelineEngine = null;
     this._cronJobs = [];
     this._watcherSubscriptions = [];
     this._watcherPending = new Map();
@@ -104,10 +111,17 @@ export class SystemManager implements SystemManagerInterface {
     // 7. 设置文件感知
     await this._setupWatchPaths();
 
+    // 8. 初始化流水线引擎
+    this.pipelines = config.pipelines || [];
+    this.pipelineEngine = new PipelineEngine(this);
+    this.pipelineEngine.registerPipelines(this.pipelines);
+    await this.pipelineEngine.loadRuns();
+
     console.log(
       `[System] 系统初始化完成 — ${this.agents.size} 个 Agent, ` +
       `${this.connections.length} 个连接, ` +
-      `${getMCPToolDefinitions().length} 个 MCP 工具`
+      `${getMCPToolDefinitions().length} 个 MCP 工具, ` +
+      `${this.pipelines.length} 个流水线`
     );
   }
 
@@ -311,6 +325,7 @@ export class SystemManager implements SystemManagerInterface {
       })),
       connections: this.connections,
       mcpServers: this._mcpServers,
+      pipelines: this.pipelines,
     };
     await fs.mkdir(path.dirname(SYSTEM_CONFIG_FILE), { recursive: true });
     await fs.writeFile(SYSTEM_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
@@ -323,6 +338,7 @@ export class SystemManager implements SystemManagerInterface {
     agents?: Array<{ id: string; name: string; position?: { x: number; y: number }; data?: AgentData }>;
     connections?: ConnectionConfig[];
     mcpServers?: Record<string, MCPServerConfig>;
+    pipelines?: PipelineDefinition[];
   }): Promise<void> {
     // 更新现有 Agent 的配置和位置
     if (data.agents) {
@@ -372,6 +388,14 @@ export class SystemManager implements SystemManagerInterface {
     // 重新配置文件感知
     await this.stopAllWatchers();
     await this._setupWatchPaths();
+
+    // 更新流水线
+    if (data.pipelines) {
+      this.pipelines = data.pipelines;
+      if (this.pipelineEngine) {
+        this.pipelineEngine.registerPipelines(this.pipelines);
+      }
+    }
 
     // 保存到磁盘
     await this.saveSystem();

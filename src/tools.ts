@@ -16,12 +16,16 @@ import {
   updateTodoStatus,
   getTodoItems,
 } from './todo.js';
+import { createArtifact, collectArtifactsByType, listStageArtifacts } from './artifact.js';
+import { parseContractsFromDir } from './contract.js';
 import dayjs from 'dayjs';
 import { MIDOU_WORKSPACE_DIR } from './config.js';
 import type {
   ToolDefinition,
   ToolHandler,
   SystemManagerInterface,
+  ArtifactType,
+  AgentRole,
 } from './types.js';
 
 // ── ToolHalt：中断工具循环的特殊返回 ──
@@ -477,6 +481,150 @@ export function createCoreTools(ctx: ToolContext): ToolEntry[] {
     },
   ));
 
+  // ═══════════════════════════════════════════
+  // Pipeline 相关工具
+  // ═══════════════════════════════════════════
+
+  // ── produce_artifact ──
+  tools.push(defineTool(
+    'produce_artifact',
+    '在流水线中产出一个结构化制品（如契约、代码、审查报告等）。',
+    {
+      properties: {
+        type: { type: 'string', enum: ['contract', 'code', 'review-report', 'test-suite', 'mock-data'], description: '制品类型' },
+        pipeline_run_id: { type: 'string', description: '流水线运行 ID' },
+        stage_id: { type: 'string', description: '阶段 ID' },
+        payload: { type: 'string', description: '制品内容（JSON 字符串或纯文本）' },
+      },
+      required: ['type', 'pipeline_run_id', 'stage_id', 'payload'],
+    },
+    async (args) => {
+      try {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(args.payload as string);
+        } catch {
+          payload = args.payload as string;
+        }
+        const artifact = await createArtifact(
+          args.type as ArtifactType,
+          ctx.agentId,
+          args.pipeline_run_id as string,
+          args.stage_id as string,
+          payload,
+        );
+        // 通知 pipeline engine
+        if (ctx.systemManager?.pipelineEngine) {
+          ctx.systemManager.pipelineEngine.submitArtifact(
+            args.pipeline_run_id as string,
+            args.stage_id as string,
+            artifact,
+          );
+        }
+        return `制品已创建: ${artifact.id} (类型: ${artifact.type})`;
+      } catch (e: unknown) {
+        return `产出制品失败: ${(e as Error).message}`;
+      }
+    },
+  ));
+
+  // ── consume_artifacts ──
+  tools.push(defineTool(
+    'consume_artifacts',
+    '获取流水线上游阶段产出的制品列表。',
+    {
+      properties: {
+        pipeline_run_id: { type: 'string', description: '流水线运行 ID' },
+        stage_ids: { type: 'string', description: '上游阶段 ID（逗号分隔）' },
+        types: { type: 'string', description: '制品类型筛选（逗号分隔，如 contract,code）' },
+      },
+      required: ['pipeline_run_id', 'stage_ids'],
+    },
+    async (args) => {
+      try {
+        const stageIds = (args.stage_ids as string).split(',').map(s => s.trim());
+        const types = args.types
+          ? (args.types as string).split(',').map(s => s.trim()) as ArtifactType[]
+          : undefined;
+
+        let artifacts;
+        if (types && types.length > 0) {
+          artifacts = await collectArtifactsByType(args.pipeline_run_id as string, stageIds, types);
+        } else {
+          const all = [];
+          for (const sid of stageIds) {
+            const stageArts = await listStageArtifacts(args.pipeline_run_id as string, sid);
+            all.push(...stageArts);
+          }
+          artifacts = all;
+        }
+
+        if (artifacts.length === 0) return '未找到匹配的制品。';
+        return JSON.stringify(artifacts, null, 2);
+      } catch (e: unknown) {
+        return `获取制品失败: ${(e as Error).message}`;
+      }
+    },
+  ));
+
+  // ── parse_contracts ──
+  tools.push(defineTool(
+    'parse_contracts',
+    '扫描项目目录，解析所有 @api-contract 注解，返回结构化的 API 契约列表。',
+    {
+      properties: {
+        project_dir: { type: 'string', description: '项目根目录路径' },
+      },
+      required: ['project_dir'],
+    },
+    async (args) => {
+      try {
+        const contracts = await parseContractsFromDir(args.project_dir as string);
+        if (contracts.length === 0) return '未找到 @api-contract 注解。';
+        return JSON.stringify(contracts, null, 2);
+      } catch (e: unknown) {
+        return `解析契约失败: ${(e as Error).message}`;
+      }
+    },
+  ));
+
+  // ── submit_verdict ──
+  tools.push(defineTool(
+    'submit_verdict',
+    '作为审查 Agent，对流水线阶段提交裁决（通过或阻塞）。',
+    {
+      properties: {
+        pipeline_run_id: { type: 'string', description: '流水线运行 ID' },
+        stage_id: { type: 'string', description: '阶段 ID' },
+        verdict: { type: 'string', enum: ['pass', 'block'], description: '裁决结果' },
+        report: { type: 'string', description: '审查报告（JSON 字符串或纯文本）' },
+      },
+      required: ['pipeline_run_id', 'stage_id', 'verdict', 'report'],
+    },
+    async (args) => {
+      if (!ctx.systemManager?.pipelineEngine) {
+        return '流水线引擎未初始化。';
+      }
+      try {
+        let report: unknown;
+        try {
+          report = JSON.parse(args.report as string);
+        } catch {
+          report = args.report as string;
+        }
+        ctx.systemManager.pipelineEngine.submitVerdict(
+          args.pipeline_run_id as string,
+          args.stage_id as string,
+          args.verdict as 'pass' | 'block',
+          report,
+        );
+        return `裁决已提交: ${args.verdict} (阶段: ${args.stage_id})`;
+      } catch (e: unknown) {
+        return `提交裁决失败: ${(e as Error).message}`;
+      }
+    },
+  ));
+
   return tools;
 }
 
@@ -486,15 +634,22 @@ export function createCoreTools(ctx: ToolContext): ToolEntry[] {
 
 /**
  * 将核心工具 + MCP 工具 + 动态工具合并，返回定义列表
+ * 支持可选的角色白名单过滤
  */
-export function getAllToolDefinitions(coreTools: ToolEntry[]): ToolDefinition[] {
-  const defs: ToolDefinition[] = coreTools.map((t) => t.definition);
+export function getAllToolDefinitions(coreTools: ToolEntry[], role?: AgentRole): ToolDefinition[] {
+  let defs: ToolDefinition[] = coreTools.map((t) => t.definition);
 
   // 动态注册的工具
   for (const def of toolDefinitions) {
     if (dynamicToolHandlers.has(def.function.name)) {
       defs.push(def);
     }
+  }
+
+  // 角色白名单过滤
+  if (role?.allowedTools && role.allowedTools.length > 0) {
+    const allowed = new Set(role.allowedTools);
+    defs = defs.filter((d) => allowed.has(d.function.name));
   }
 
   return defs;

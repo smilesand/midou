@@ -150,6 +150,7 @@ app.get('/api/system', async (_req, res) => {
     agents,
     connections: systemManager.connections,
     mcpServers: (systemManager as any)._mcpServers || {},
+    pipelines: systemManager.pipelines || [],
   });
 });
 
@@ -198,6 +199,45 @@ app.get('/api/agent/:agentId/history', async (req, res) => {
 app.post('/api/memory/cleanup', async (_req, res) => {
   const cleaned = await memoryCleanup();
   res.json({ cleaned });
+});
+
+// ═══════════════════════════════════════════
+// Pipeline API
+// ═══════════════════════════════════════════
+
+// 获取所有流水线定义
+app.get('/api/pipelines', (_req, res) => {
+  res.json(systemManager?.pipelineEngine?.getPipelines() || []);
+});
+
+// 启动流水线
+app.post('/api/pipelines/:id/start', async (req, res) => {
+  if (!systemManager?.pipelineEngine) {
+    res.status(503).json({ error: '流水线引擎未初始化' });
+    return;
+  }
+  try {
+    const { input } = req.body as { input?: string };
+    const run = await systemManager.pipelineEngine.startPipeline(req.params.id, input);
+    res.json(run);
+  } catch (err: unknown) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// 获取所有运行
+app.get('/api/pipeline-runs', (_req, res) => {
+  res.json(systemManager?.pipelineEngine?.getAllRuns() || []);
+});
+
+// 获取单次运行状态
+app.get('/api/pipeline-runs/:runId', (req, res) => {
+  const run = systemManager?.pipelineEngine?.getPipelineRun(req.params.runId);
+  if (!run) {
+    res.status(404).json({ error: '运行不存在' });
+    return;
+  }
+  res.json(run);
 });
 
 // ═══════════════════════════════════════════

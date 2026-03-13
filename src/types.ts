@@ -27,6 +27,24 @@ export interface AgentData {
   cronJobs?: CronJobConfig[];
   cron?: string;
   watchPaths?: string[];
+  role?: AgentRole;
+}
+
+// ── Agent 角色模型 ──
+
+export type AgentRoleType = 'frontend' | 'review' | 'backend' | 'testing' | 'custom';
+export type ArtifactType = 'contract' | 'code' | 'review-report' | 'test-suite' | 'mock-data';
+
+export interface AgentRole {
+  type: AgentRoleType;
+  /** 该角色可使用的工具白名单（空数组或未设置 = 全部可用） */
+  allowedTools?: string[];
+  /** 该角色可产出的制品类型 */
+  produces?: ArtifactType[];
+  /** 该角色可消费的制品类型 */
+  consumes?: ArtifactType[];
+  /** 该角色在 pipeline 中可发出裁决（如审查 Agent） */
+  canVerdict?: boolean;
 }
 
 export interface CronJobConfig {
@@ -184,6 +202,7 @@ export interface SystemConfig {
   agents: AgentConfig[];
   connections: ConnectionConfig[];
   mcpServers?: Record<string, MCPServerConfig>;
+  pipelines?: PipelineDefinition[];
 }
 
 export interface ConnectionConfig {
@@ -256,6 +275,8 @@ export interface SystemManagerInterface {
   io: SocketIOServer;
   agents: Map<string, AgentInterface>;
   connections: ConnectionConfig[];
+  pipelines: PipelineDefinition[];
+  pipelineEngine: PipelineEngineInterface | null;
   emitEvent: (event: string, data: unknown) => void;
   getOrganizationRoster: (requestingAgentId?: string | null) => string;
   handleUserMessage: (message: string, targetAgentId?: string | null) => Promise<void>;
@@ -265,6 +286,7 @@ export interface SystemManagerInterface {
   buildOutputHandler?: (agent: AgentInterface, baseHandler: OutputHandler) => OutputHandler;
   stopAllCronJobs: () => void;
   loadSystem: () => Promise<void>;
+  saveSystem: () => Promise<void>;
   outputHandlerMiddlewares: Array<(agent: AgentInterface, handler: OutputHandler) => OutputHandler | void>;
   useOutputHandler: (middleware: (agent: AgentInterface, handler: OutputHandler) => OutputHandler | void) => void;
 }
@@ -293,4 +315,97 @@ export interface SessionMemoryInterface {
   add: (roleOrMsg: string | ChatMessage, content?: string) => void;
   clear: () => void;
   removeLast: () => ChatMessage | null;
+}
+
+// ── 制品系统 ──
+
+export interface Artifact {
+  id: string;
+  type: ArtifactType;
+  producedBy: string;
+  pipelineRunId: string;
+  stageId: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface ContractField {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
+  defaultValue?: string;
+}
+
+export interface ContractResponse {
+  statusCode: number;
+  type?: string;
+  description: string;
+  fields?: ContractField[];
+}
+
+export interface ParsedContract {
+  module: string;
+  endpoint: string;
+  method: string;
+  path: string;
+  summary: string;
+  description: string;
+  permission: string;
+  requestBody?: ContractField[];
+  responses: ContractResponse[];
+  mockData?: Record<string, unknown>;
+  serverHints?: string[];
+  raw: string;
+}
+
+// ── 流水线系统 ──
+
+export interface PipelineDefinition {
+  id: string;
+  name: string;
+  projectDir: string;
+  stages: StageDefinition[];
+}
+
+export interface StageDefinition {
+  id: string;
+  name: string;
+  agentId: string;
+  dependsOn: string[];
+  inputArtifacts: ArtifactType[];
+  outputArtifacts: ArtifactType[];
+  promptTemplate: string;
+  isGate?: boolean;
+  onBlockReturnTo?: string;
+}
+
+export type PipelineRunStatus = 'running' | 'blocked' | 'completed' | 'failed';
+export type StageStatus = 'pending' | 'running' | 'completed' | 'blocked' | 'skipped';
+
+export interface StageState {
+  status: StageStatus;
+  artifacts: string[];
+  verdict?: 'pass' | 'block';
+  retryCount: number;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface PipelineRun {
+  id: string;
+  pipelineId: string;
+  status: PipelineRunStatus;
+  stageStates: Record<string, StageState>;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface PipelineEngineInterface {
+  startPipeline(pipelineId: string, input?: string): Promise<PipelineRun>;
+  getPipelineRun(runId: string): PipelineRun | undefined;
+  getAllRuns(): PipelineRun[];
+  submitArtifact(runId: string, stageId: string, artifact: Artifact): void;
+  submitVerdict(runId: string, stageId: string, verdict: 'pass' | 'block', report: unknown): void;
 }

@@ -308,7 +308,7 @@ export class ChatEngine implements ChatEngineInterface {
    * 合并核心工具 + MCP 工具定义
    */
   private _getAllToolDefs(coreTools: ToolEntry[]): ToolDefinition[] {
-    const defs = getAllToolDefinitions(coreTools);
+    const defs = getAllToolDefinitions(coreTools, this.agentData.role);
 
     // MCP 工具
     try {

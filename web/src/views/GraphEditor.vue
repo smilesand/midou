@@ -10,6 +10,9 @@
       <button @click="triggerImport" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">导入</button>
       <input type="file" ref="fileInput" @change="importSystem" accept=".json" class="hidden" />
       <button @click="openMcpConfig" class="px-4 py-2 bg-green-500 text-white border-none rounded cursor-pointer disabled:bg-gray-300">配置 MCP</button>
+      <router-link to="/pipeline" class="px-4 py-2 bg-purple-500 text-white border-none rounded cursor-pointer hover:bg-purple-600 no-underline text-sm inline-flex items-center">
+        流水线
+      </router-link>
     </div>
     
     <div class="flex-1 relative flex min-h-0">
@@ -107,6 +110,39 @@
             <button @click="removeWatchPath(index as number)" class="bg-red-50 text-red-500 border border-red-200 rounded cursor-pointer px-2.5 font-bold transition-all hover:bg-red-500 hover:text-white">X</button>
           </div>
           <button @click="addWatchPath" class="w-full p-2.5 bg-blue-50 text-blue-600 border border-dashed border-blue-200 rounded-md cursor-pointer font-semibold transition-all hover:bg-blue-100">+ Add Watch Path</button>
+
+          <h4 class="mt-5 mb-2.5 text-gray-500 text-sm uppercase tracking-wide">Agent Role</h4>
+          <div class="mb-4 bg-white p-3 rounded-md border border-gray-100">
+            <label class="block mb-2 font-semibold text-gray-700 text-sm">角色类型:</label>
+            <select v-model="selectedNode.data.role.type" class="w-full px-2.5 py-2 border border-gray-300 rounded box-border text-sm">
+              <option value="">无</option>
+              <option value="frontend">前端 (frontend)</option>
+              <option value="backend">后端 (backend)</option>
+              <option value="review">审查 (review)</option>
+              <option value="testing">测试 (testing)</option>
+              <option value="custom">自定义 (custom)</option>
+            </select>
+          </div>
+          <div class="mb-4 bg-white p-3 rounded-md border border-gray-100">
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" v-model="selectedNode.data.role.canVerdict" />
+              可发出裁决 (canVerdict)
+            </label>
+          </div>
+          <div class="mb-4 bg-white p-3 rounded-md border border-gray-100">
+            <label class="block mb-2 font-semibold text-gray-700 text-sm">可产出制品 (produces):</label>
+            <div v-for="aType in artifactTypes" :key="aType" class="flex items-center gap-2 mb-1">
+              <input type="checkbox" :value="aType" v-model="selectedNode.data.role.produces" />
+              <span class="text-sm text-gray-600">{{ aType }}</span>
+            </div>
+          </div>
+          <div class="mb-4 bg-white p-3 rounded-md border border-gray-100">
+            <label class="block mb-2 font-semibold text-gray-700 text-sm">可消费制品 (consumes):</label>
+            <div v-for="aType in artifactTypes" :key="aType" class="flex items-center gap-2 mb-1">
+              <input type="checkbox" :value="aType" v-model="selectedNode.data.role.consumes" />
+              <span class="text-sm text-gray-600">{{ aType }}</span>
+            </div>
+          </div>
         </div>
         <div class="p-4 bg-white border-t border-gray-200 flex gap-2">
           <button @click="saveSystem" :disabled="isSaving" class="flex-1 p-2.5 bg-green-500 text-white border-none rounded-md cursor-pointer font-semibold transition-colors hover:bg-green-600 disabled:bg-gray-300">{{ isSaving ? '保存中...' : '保存' }}</button>
@@ -189,6 +225,14 @@ interface CronJob {
   prompt: string
 }
 
+interface AgentRole {
+  type: string
+  allowedTools?: string[]
+  produces?: string[]
+  consumes?: string[]
+  canVerdict?: boolean
+}
+
 interface AgentNodeData {
   name: string
   isAgentMode: boolean
@@ -201,7 +245,10 @@ interface AgentNodeData {
   maxIterations: number | null
   cronJobs: CronJob[]
   watchPaths: string[]
+  role: AgentRole
 }
+
+const artifactTypes = ['contract', 'code', 'review-report', 'test-suite', 'mock-data']
 
 const { onConnect: onConnectFlow, fitView } = useVueFlow()
 
@@ -255,7 +302,8 @@ onMounted(async () => {
         maxTokens: agent.data?.maxTokens || null,
         maxIterations: agent.data?.maxIterations || null,
         cronJobs: agent.data?.cronJobs || [],
-        watchPaths: agent.data?.watchPaths || []
+        watchPaths: agent.data?.watchPaths || [],
+        role: agent.data?.role || { type: '', produces: [], consumes: [], canVerdict: false }
       }
     }))
     
@@ -355,7 +403,8 @@ const addAgent = (): void => {
       maxTokens: null,
       maxIterations: null,
       cronJobs: [],
-      watchPaths: []
+      watchPaths: [],
+      role: { type: '', produces: [], consumes: [], canVerdict: false }
     }
   })
 }
@@ -406,7 +455,8 @@ const duplicateAgent = (): void => {
       maxTokens: source.data.maxTokens,
       maxIterations: source.data.maxIterations,
       cronJobs: JSON.parse(JSON.stringify(source.data.cronJobs || [])),
-      watchPaths: JSON.parse(JSON.stringify(source.data.watchPaths || []))
+      watchPaths: JSON.parse(JSON.stringify(source.data.watchPaths || [])),
+      role: JSON.parse(JSON.stringify(source.data.role || { type: '', produces: [], consumes: [], canVerdict: false }))
     }
   }
   elements.value.push(newNode)
@@ -518,7 +568,8 @@ const getSystemData = (): Record<string, unknown> => {
         maxTokens: n.data.maxTokens,
         maxIterations: n.data.maxIterations,
         cronJobs: n.data.cronJobs,
-        watchPaths: (n.data.watchPaths || []).filter((p: string) => p.trim() !== '')
+        watchPaths: (n.data.watchPaths || []).filter((p: string) => p.trim() !== ''),
+        role: n.data.role?.type ? n.data.role : undefined
       }
     })),
     connections: edges.map(e => ({
